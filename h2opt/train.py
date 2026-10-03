@@ -3,7 +3,7 @@
 import numpy as np
 import torch
 
-from .heritability import anova_heritability
+from .heritability import AnovaDesign
 
 
 def decorrelate(Y, clip=None):
@@ -58,7 +58,7 @@ def _synthetic_traits(Y, background):
 
 
 def train(model, X, groups, environment, train_test, model_file=None, n_traits=1, first_trait=0, n_iter=10000,
-          learning_rate=1e-4, noise_level=0.1, penalty=None, device='cpu', verbose=True, print_every=100, save_every=10):
+          learning_rate=1e-4, noise_level=0.1, penalty=None, device='cpu', verbose=True, print_every=100, save_every=1000):
     """Train synthetic traits one at a time to maximize their ANOVA heritability on the training set.
 
     model: a TraitModels with at least n_traits traits; X: (n, m) measurements.
@@ -66,19 +66,22 @@ def train(model, X, groups, environment, train_test, model_file=None, n_traits=1
     Trait t is trained after traits first_trait..t-1 and is made orthogonal to all earlier traits.
     Each step adds uniform noise in [0, noise_level) to the training measurements and maximizes the
     mean heritability with RMSprop. penalty(trait_model, Y) is an optional regularization term added to the loss,
-    given the model of the current trait and its raw (n_train, 1) output on the noisy training data. If model_file is given, the whole model is saved every save_every steps.
-    Returns the model.
+    given the model of the current trait and its raw (n_train, 1) output on the noisy training data.
+    If model_file is given, the whole model is saved every save_every steps and after each trait.
     """
     X = torch.tensor(X).float().to(device)
     model.to(device)
     groups = np.asarray(groups)
     environment = np.asarray(environment) if environment is not None else None
     train_test = np.asarray(train_test)
-    is_train = train_test == 0
-    has_test = np.any(train_test == 1)
+    is_train, is_test = train_test == 0, train_test == 1
 
-    def subset(rows):
-        return groups[rows], (environment[rows] if environment is not None else None)
+    def design(rows):
+        return AnovaDesign(groups[rows], environment[rows] if environment is not None else None, device)
+
+    train_design = design(is_train)
+    test_design = design(is_test) if np.any(is_test) else None
+    X_train_clean = X[is_train]
 
     for trait in range(first_trait, n_traits):
         if trait > 0:
@@ -86,25 +89,24 @@ def train(model, X, groups, environment, train_test, model_file=None, n_traits=1
         else:
             background = torch.zeros((X.shape[0], 0), device=device)
 
+        background_train = background[is_train]
         optimizer = torch.optim.RMSprop(model.parameters(), lr=learning_rate)
 
         for step in range(n_iter):
-            X_train = X[is_train]
-            X_train = X_train + torch.rand(size=X_train.shape, device=device) * noise_level
+            X_train = X_train_clean + torch.rand(size=X_train_clean.shape, device=device) * noise_level
 
             Y_raw = model(X_train, np.array([trait]))
-            Y = _synthetic_traits(Y_raw, background[is_train])
-            loss = -1 * torch.mean(anova_heritability(Y, *subset(is_train)))
+            Y = _synthetic_traits(Y_raw, background_train)
+            loss = -1 * torch.mean(train_design.heritability(Y))
             if penalty is not None:
                 loss = loss + penalty(model.models[trait], Y_raw)
 
             if verbose and step % print_every == 0:
                 with torch.no_grad():
                     Y = _synthetic_traits(model(X, np.array([trait])), background)
-                    message = f'trait {trait} step {step}: train heritability {anova_heritability(Y[is_train], *subset(is_train)).cpu().numpy()}'
-                    if has_test:
-                        is_test = train_test == 1
-                        message += f', test heritability {anova_heritability(Y[is_test], *subset(is_test)).cpu().numpy()}'
+                    message = f'trait {trait} step {step}: train heritability {train_design.heritability(Y[is_train]).cpu().numpy()}'
+                    if test_design is not None:
+                        message += f', test heritability {test_design.heritability(Y[is_test]).cpu().numpy()}'
                 print(message)
 
             optimizer.zero_grad()
@@ -113,5 +115,8 @@ def train(model, X, groups, environment, train_test, model_file=None, n_traits=1
 
             if model_file is not None and step % save_every == 0:
                 torch.save(model, model_file)
+
+        if model_file is not None:
+            torch.save(model, model_file)
 
     return model

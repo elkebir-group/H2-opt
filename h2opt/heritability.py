@@ -5,11 +5,21 @@ import torch
 import torch.nn.functional as F
 
 
-def _group_index(labels):
-    """Sort order of `labels` and the start/end positions (inclusive) of each group in that order."""
-    order = np.argsort(labels)
-    _, start, counts = np.unique(labels[order], return_index=True, return_counts=True)
-    return order, start, start + counts - 1
+class _Grouping:
+    """Sort order of a label array and the position of each group in that order, as tensors on a device."""
+
+    def __init__(self, labels, device):
+        order = np.argsort(labels)
+        _, start, counts = np.unique(labels[order], return_index=True, return_counts=True)
+        end = start + counts - 1
+        sizes = end + 1 - start
+        group_of_row = np.zeros(order.shape[0], dtype=int)  # group of each row in sorted order
+        group_of_row[np.cumsum(sizes)[:-1]] = 1
+        self.order = torch.tensor(order, device=device)
+        self.start = torch.tensor(start, device=device)
+        self.end_plus_one = torch.tensor(end + 1, device=device)
+        self.sizes = torch.tensor(sizes, device=device).float()
+        self.group_of_row = torch.tensor(np.cumsum(group_of_row), device=device)
 
 
 def _as_environment(environment, n):
@@ -24,14 +34,8 @@ def _as_environment(environment, n):
     return environment
 
 
-def grouped_variance(Y, groups):
-    """Sum over groups of the unbiased within-group sum of squares, per column of Y.
-
-    Every group must have at least two members.
-    """
-    order, start, end = _group_index(groups)
-
-    Y_sorted = Y[order]
+def _grouped_variance(Y, grouping):
+    Y_sorted = Y[grouping.order]
     if Y_sorted.dim() == 2:
         Y_sorted = F.pad(Y_sorted, (0, 0, 1, 0), "constant", 0)
     else:
@@ -40,13 +44,32 @@ def grouped_variance(Y, groups):
     Y_cumsum = torch.cumsum(Y_sorted, dim=0)
     Y_sq_cumsum = torch.cumsum(Y_sorted ** 2, dim=0)
 
-    sums = Y_cumsum[end + 1] - Y_cumsum[start]
-    sums_sq = Y_sq_cumsum[end + 1] - Y_sq_cumsum[start]
-    sizes = torch.tensor(end + 1 - start).float().to(Y.device)
+    sums = Y_cumsum[grouping.end_plus_one] - Y_cumsum[grouping.start]
+    sums_sq = Y_sq_cumsum[grouping.end_plus_one] - Y_sq_cumsum[grouping.start]
+    sizes = grouping.sizes
 
     within = sums_sq - ((sums ** 2) / sizes.reshape((-1, 1)))
     within = within * (sizes / (sizes - 1)).reshape((-1, 1))
     return torch.sum(within, axis=0)
+
+
+def _remove_environment(Y, groupings):
+    Y = Y.clone()
+    for grouping in groupings:
+        Y_sorted = torch.cat((torch.zeros((1, Y.shape[1])).to(Y.device), Y[grouping.order]))
+        Y_cumsum = torch.cumsum(Y_sorted, dim=0)
+        sums = Y_cumsum[grouping.end_plus_one] - Y_cumsum[grouping.start]
+        means = sums / grouping.sizes.reshape((-1, 1))
+        Y[grouping.order] = Y[grouping.order] - means[grouping.group_of_row]
+    return Y
+
+
+def grouped_variance(Y, groups):
+    """Sum over groups of the unbiased within-group sum of squares, per column of Y.
+
+    Every group must have at least two members.
+    """
+    return _grouped_variance(Y, _Grouping(np.asarray(groups), Y.device))
 
 
 def remove_environment(Y, environment):
@@ -55,27 +78,55 @@ def remove_environment(Y, environment):
     Returns a new tensor; Y is not modified.
     """
     environment = _as_environment(environment, Y.shape[0])
-    Y = Y.clone()
+    return _remove_environment(Y, [_Grouping(environment[:, a], Y.device) for a in range(environment.shape[1])])
 
-    for a in range(environment.shape[1]):
-        order, start, end = _group_index(environment[:, a])
 
-        Y_sorted = torch.cat((torch.zeros((1, Y.shape[1])).to(Y.device), Y[order]))
-        Y_cumsum = torch.cumsum(Y_sorted, dim=0)
-        sums = Y_cumsum[end + 1] - Y_cumsum[start]
+class AnovaDesign:
+    """Groups and environment of a fixed set of individuals, preprocessed once for repeated anova_heritability calls.
 
-        sizes_np = end + 1 - start
-        sizes = torch.tensor(sizes_np).float().to(Y.device)
-        means = sums / sizes.reshape((-1, 1))
+    AnovaDesign(groups, environment, device).heritability(Y) equals anova_heritability(Y, groups, environment)
+    but does the sorting and indexing of the labels only once (e.g. once per training run instead of every step).
+    """
 
-        # group index of each row in sorted order
-        group_of_row = np.zeros(order.shape[0])
-        group_of_row[np.cumsum(sizes_np)[:-1]] = 1
-        group_of_row = np.cumsum(group_of_row)
+    def __init__(self, groups, environment=None, device='cpu'):
+        groups = np.asarray(groups)
+        environment = _as_environment(environment, len(groups))
+        _, inverse, counts = np.unique(groups, return_inverse=True, return_counts=True)
+        self.keep = None
+        if np.min(counts) == 1:  # groups with one individual are dropped
+            keep = np.argwhere(counts[inverse] >= 2)[:, 0]
+            groups, environment = groups[keep], environment[keep]
+            self.keep = torch.tensor(keep, device=device)
+        self.groups = _Grouping(groups, device)
+        self.environment = [_Grouping(environment[:, a], device) for a in range(environment.shape[1])]
 
-        Y[order] = Y[order] - means[group_of_row]
+    def heritability(self, Y, return_variance=False, env_adjusted_total=False):
+        """See anova_heritability."""
+        if self.keep is not None:
+            Y = Y[self.keep]
 
-    return Y
+        if return_variance:
+            Y2 = Y
+        else:
+            Y2 = Y - torch.mean(Y, axis=0).reshape((1, -1))
+            Y2 = Y2 / (torch.mean(torch.abs(Y2), axis=0)).reshape((1, -1))
+
+        variance_total = torch.sum((Y2 - torch.mean(Y2, axis=0)) ** 2, axis=0)
+
+        if len(self.environment) == 0:
+            variance_env = variance_total
+        else:
+            Y2 = _remove_environment(Y2, self.environment)
+            variance_env = torch.sum((Y2 - torch.mean(Y2, axis=0).reshape((1, -1))) ** 2, axis=0)
+
+        variance_within = _grouped_variance(Y2, self.groups)
+
+        if env_adjusted_total:
+            variance_total = variance_env
+
+        if return_variance:
+            return (variance_env - variance_within) / Y.shape[0], variance_total / Y.shape[0]
+        return (variance_env - variance_within) / variance_total
 
 
 def anova_heritability(Y, groups, environment=None, return_variance=False, env_adjusted_total=False):
@@ -89,38 +140,9 @@ def anova_heritability(Y, groups, environment=None, return_variance=False, env_a
     broad-sense heritability; for groups with genetic relatedness r, divide by r for narrow-sense.
     Groups with a single member are dropped. With env_adjusted_total, the denominator is V_env.
     With return_variance, returns (genetic variance, total variance) per individual instead.
+    For repeated calls on the same individuals, use AnovaDesign.
     """
-    groups = np.asarray(groups)
-    environment = _as_environment(environment, len(groups))
-
-    _, inverse, counts = np.unique(groups, return_inverse=True, return_counts=True)
-    if np.min(counts) == 1:
-        keep = np.argwhere(counts[inverse] >= 2)[:, 0]
-        return anova_heritability(Y[keep], groups[keep], environment[keep], return_variance=return_variance,
-                                  env_adjusted_total=env_adjusted_total)
-
-    if return_variance:
-        Y2 = Y
-    else:
-        Y2 = Y - torch.mean(Y, axis=0).reshape((1, -1))
-        Y2 = Y2 / (torch.mean(torch.abs(Y2), axis=0)).reshape((1, -1))
-
-    variance_total = torch.sum((Y2 - torch.mean(Y2, axis=0)) ** 2, axis=0)
-
-    if environment.shape[1] == 0:
-        variance_env = variance_total
-    else:
-        Y2 = remove_environment(Y2, environment)
-        variance_env = torch.sum((Y2 - torch.mean(Y2, axis=0).reshape((1, -1))) ** 2, axis=0)
-
-    variance_within = grouped_variance(Y2, groups)
-
-    if env_adjusted_total:
-        variance_total = variance_env
-
-    if return_variance:
-        return (variance_env - variance_within) / Y.shape[0], variance_total / Y.shape[0]
-    return (variance_env - variance_within) / variance_total
+    return AnovaDesign(groups, environment, Y.device).heritability(Y, return_variance, env_adjusted_total)
 
 
 def genetic_covariance(Y, N, groups, environment=None, correlation=False):
