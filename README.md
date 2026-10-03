@@ -79,6 +79,19 @@ traits = model(torch.tensor(X).float())  # n by n_traits synthetic traits (befor
 Options: `n_iter` steps per trait (default 10000), `learning_rate` for RMSprop (default 1e-4), `noise_level` for data augmentation, the maximum of the uniform noise added to the measurements at each step (default 0.1), `model_file` to save the model every `save_every` steps (default 1000) and after each trait, and `device` (e.g. `"cuda"`) to train on a GPU.
 `ConvModel` is a convolutional alternative to `LinearModel` for spectra.
 
+### Linear H2-opt with L-BFGS
+
+For linear traits, `LinearH2opt` trains to convergence with L-BFGS (in float64), with a ridge penalty on the weights.
+`ridge` and the number of steps `n_iter` are best tuned on validation individuals, e.g. with `validation=(X_val, groups_val, environment_val)`, which records the validation heritability after every step in `validation_curves_`.
+
+```python
+from h2opt import LinearH2opt
+
+is_train = train_test == 0
+model = LinearH2opt(n_traits=5, ridge=1e-4, n_iter=100).fit(X[is_train], groups[is_train], environment[is_train])
+traits = model.transform(X)
+```
+
 ## Baselines
 
 `h2opt.baselines` has linear baselines with a common interface: `fit(X, groups, environment)` on the training individuals, then `transform(X)`.
