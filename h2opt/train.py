@@ -3,58 +3,27 @@
 import numpy as np
 import torch
 
-from .heritability import AnovaDesign
+from .decorrelation import Decorrelation, orthonormal_basis, residualize
+from .heritability import AnovaDesign, anova_heritability
 
 
-def decorrelate(Y, clip=None):
-    """Standardize the columns of Y; make each orthogonal to the columns before it (Gram-Schmidt).
+def synthetic_traits(model, X, is_train, traits=None):
+    """Synthetic traits of all individuals: the outputs of the selected traits of model (default
+    all), made uncorrelated on the training individuals (is_train, boolean) by Decorrelation.
 
-    The projection coefficients are computed without gradient, so each column only receives gradient
-    through itself. If clip is given, values are clipped to [-clip, clip] after standardizing.
+    X: (n, m) array or tensor. Returns an (n, k) float64 array.
     """
-    Y = Y - torch.mean(Y, axis=0).reshape((1, -1))
-    Y = Y / (torch.mean(Y ** 2, axis=0) ** 0.5).reshape((1, -1))
-
-    if Y.shape[1] > 1:
-        Y_basis = Y.detach().clone()
-        for a in range(1, Y_basis.shape[1]):
-            for b in range(a):
-                cor = torch.mean(Y_basis[:, a] * Y_basis[:, b])
-                Y_basis[:, a] = Y_basis[:, a] - (cor * Y_basis[:, b])
-                Y_basis[:, a] = Y_basis[:, a] / (torch.mean(Y_basis[:, a] ** 2) ** 0.5)
-
-        # project each column on the orthonormal basis of the columns before it
-        cor_all = torch.matmul(Y_basis.T, Y) / Y.shape[0]
-        upper = torch.triu(torch.ones((Y.shape[1], Y.shape[1])), diagonal=1).to(Y.device)
-        Y = Y - torch.matmul(Y_basis, cor_all * upper)
-
-    Y = Y - torch.mean(Y, axis=0).reshape((1, -1))
-    Y = Y / (torch.mean(Y ** 2, axis=0) ** 0.5).reshape((1, -1))
-
-    if clip is not None:
-        Y = torch.clamp(Y, -clip, clip)
-    return Y
+    device = next(model.parameters()).device
+    with torch.no_grad():
+        Y = model(torch.as_tensor(X, dtype=torch.float32, device=device), traits).cpu().numpy()
+    return Decorrelation().fit(Y[np.asarray(is_train, bool)]).transform(Y)
 
 
-def project_out(Y, background):
-    """Project the (standardized) columns of background out of each column of Y, then standardize.
-
-    background is assumed to have orthogonal columns (e.g. the output of decorrelate).
-    """
-    Y = Y - torch.mean(Y, axis=0).reshape((1, -1))
-
-    if background.shape[1] > 0:
-        background = background - torch.mean(background, axis=0).reshape((1, -1))
-        background = background / (torch.mean(background ** 2, axis=0).reshape((1, -1)) ** 0.5)
-        coef = torch.mean(Y * background, axis=0)
-        Y = Y - torch.sum(coef.reshape((1, -1)) * background, axis=1).reshape((-1, 1))
-
-    Y = Y - torch.mean(Y, axis=0).reshape((1, -1))
-    return Y / (torch.mean(Y ** 2, axis=0).reshape((1, -1)) ** 0.5)
-
-
-def _synthetic_traits(Y, background, clip):
-    return decorrelate(project_out(Y, background), clip=clip)
+def _loss_traits(Y, basis, clip):
+    """Residual of Y on the earlier traits (basis), standardized and clipped to [-clip, clip]."""
+    Y = residualize(Y, basis)
+    Y = Y / torch.mean(Y ** 2, axis=0) ** 0.5
+    return Y if clip is None else torch.clamp(Y, -clip, clip)
 
 
 def train(model, X, groups, environment, train_test, model_file=None, n_traits=1, first_trait=0,
@@ -64,7 +33,12 @@ def train(model, X, groups, environment, train_test, model_file=None, n_traits=1
 
     model: a TraitModels with at least n_traits traits; X: (n, m) measurements.
     groups, environment: as in anova_heritability. train_test: length-n array, 0 = train, 1 = test.
-    Trait t is trained after traits first_trait..t-1 and is made orthogonal to all earlier traits.
+    Traits first_trait..n_traits-1 are trained in order (traits before first_trait are taken as
+    already trained). In the loss, trait t is the residual of its output after least-squares
+    regression on the outputs of traits 0..t-1 on the training individuals, so the test
+    individuals never shape the objective. The final traits are
+    synthetic_traits(model, X, train_test == 0); with verbose, their train and test heritability
+    is printed every print_every steps.
     Each step adds noise to the training measurements and maximizes the mean heritability with
     RMSprop. noise is 'uniform' (in [0, noise_level), the paper's sorghum setting) or 'normal'
     (standard deviation noise_level, the paper's simulation setting). The standardized traits are
@@ -80,9 +54,8 @@ def train(model, X, groups, environment, train_test, model_file=None, n_traits=1
     train_test = np.asarray(train_test)
     is_train, is_test = train_test == 0, train_test == 1
 
-    def design(rows):
-        env = environment[rows] if environment is not None else None
-        return AnovaDesign(groups[rows], env, device)
+    def labels(rows):
+        return groups[rows], environment[rows] if environment is not None else None
 
     if noise == 'uniform':
         def draw_noise(shape):
@@ -93,36 +66,31 @@ def train(model, X, groups, environment, train_test, model_file=None, n_traits=1
     else:
         raise ValueError(f"noise must be 'uniform' or 'normal', not {noise!r}")
 
-    train_design = design(is_train)
-    test_design = design(is_test) if np.any(is_test) else None
+    train_design = AnovaDesign(*labels(is_train), device)
     X_train_clean = X[is_train]
 
     for trait in range(first_trait, n_traits):
-        if trait > 0:
-            background = decorrelate(model(X, np.arange(trait)).detach())
-        else:
-            background = torch.zeros((X.shape[0], 0), device=device)
-
-        background_train = background[is_train]
+        with torch.no_grad():
+            earlier = model(X_train_clean, np.arange(trait)).double()
+        basis = orthonormal_basis(earlier).float()
         optimizer = torch.optim.RMSprop(model.parameters(), lr=learning_rate)
 
         for step in range(n_iter):
             X_train = X_train_clean + draw_noise(X_train_clean.shape) * noise_level
 
             Y_raw = model(X_train, np.array([trait]))
-            Y = _synthetic_traits(Y_raw, background_train, clip)
+            Y = _loss_traits(Y_raw, basis, clip)
             loss = -1 * torch.mean(train_design.heritability(Y))
             if penalty is not None:
                 loss = loss + penalty(model.models[trait], Y_raw)
 
             if verbose and step % print_every == 0:
-                with torch.no_grad():
-                    Y = _synthetic_traits(model(X, np.array([trait])), background, clip)
-                    train_h = train_design.heritability(Y[is_train]).cpu().numpy()
-                    message = f'trait {trait} step {step}: train heritability {train_h}'
-                    if test_design is not None:
-                        test_h = test_design.heritability(Y[is_test]).cpu().numpy()
-                        message += f', test heritability {test_h}'
+                Y = synthetic_traits(model, X, is_train, np.arange(trait + 1))[:, -1:]
+                message = f'trait {trait} step {step}: train heritability '
+                message += f'{anova_heritability(Y[is_train], *labels(is_train))}'
+                if np.any(is_test):
+                    message += ', test heritability '
+                    message += f'{anova_heritability(Y[is_test], *labels(is_test))}'
                 print(message)
 
             optimizer.zero_grad()

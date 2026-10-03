@@ -5,10 +5,22 @@ import torch
 import h2opt
 
 
-def test_decorrelate_gives_orthonormal_columns():
-    Y = np.random.RandomState(0).normal(size=(500, 4)) @ np.triu(np.ones((4, 4)))
-    Y = h2opt.decorrelate(torch.tensor(Y).float())
-    np.testing.assert_allclose((Y.T @ Y / Y.shape[0]).numpy(), np.eye(4), atol=1e-4)
+def test_test_individuals_do_not_shape_training(sorghum):
+    X, groups, environment = sorghum
+    X = X[:, ::20]
+    train_test = (np.random.RandomState(0).randint(4, size=len(groups)) == 0).astype(int)
+    changed = X.copy()
+    changed[train_test == 1] = np.random.RandomState(1).normal(size=changed[train_test == 1].shape)
+    weights = []
+    for measurements in (X, changed):
+        torch.manual_seed(0)
+        model = h2opt.TraitModels(3, h2opt.LinearModel, X.shape[1])
+        h2opt.train(model, measurements, groups, environment, train_test, n_traits=3, n_iter=20,
+                    learning_rate=1e-3, noise_level=0.005, verbose=False)
+        weights.append(torch.cat([m.lin1.weight for m in model.models]).detach())
+    torch.testing.assert_close(weights[0], weights[1], rtol=0, atol=0)
+    traits = h2opt.synthetic_traits(model, changed, train_test == 0)
+    np.testing.assert_allclose(np.corrcoef(traits[train_test == 0].T), np.eye(3), atol=1e-6)
 
 
 def test_train_increases_heritability(sorghum):

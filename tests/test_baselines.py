@@ -28,3 +28,29 @@ def test_pch_more_measurements_than_individuals(sorghum):
     rows = np.arange(200)
     Y = baselines.PCH(2, ridge=1e-3).fit_transform(X[rows], groups[rows], environment[rows])
     assert Y.shape == (200, 2) and np.all(np.isfinite(Y))
+
+
+def test_pch_forms_give_anova_heritability(sorghum):
+    X, groups, environment = sorghum
+    X = X[:300, ::50]
+    groups, environment = groups[:300], environment[:300]
+    A, B = baselines.PCH.heritability_forms(X, groups, environment)
+    w = np.random.RandomState(0).normal(size=(X.shape[1], 4))
+    expected = h2opt.anova_heritability(X @ w, groups, environment)
+    ratio = np.einsum('ik,ij,jk->k', w, A, w) / np.einsum('ik,ij,jk->k', w, B, w)
+    np.testing.assert_allclose(ratio, expected, rtol=1e-8)
+
+
+def test_decorrelation_is_sequential_least_squares():
+    rng = np.random.RandomState(0)
+    Y = rng.normal(size=(200, 3)) @ np.triu(np.ones((3, 3))) + 5
+    fit = np.arange(200) < 150
+    decorrelation = h2opt.Decorrelation().fit(Y[fit])
+    out = decorrelation.transform(Y)
+    np.testing.assert_allclose(np.corrcoef(out[fit].T), np.eye(3), atol=1e-10)
+    # trait 3: residual of trait 3 on an intercept and traits 1-2, coefficients from the fit rows
+    design = np.column_stack([np.ones(fit.sum()), Y[fit, :2]])
+    coef = np.linalg.lstsq(design, Y[fit, 2], rcond=None)[0]
+    residual = Y[:, 2] - np.column_stack([np.ones(200), Y[:, :2]]) @ coef
+    np.testing.assert_allclose(out[:, 2], residual, atol=1e-10)
+    np.testing.assert_allclose(out[:, 0], Y[:, 0] - Y[fit, 0].mean(), atol=1e-10)

@@ -40,6 +40,6 @@ def test_pch_tune_scores_held_out_heritability(sorghum):
     fit, val = fold != 0, fold == 0
     pch = baselines.PCH(2, ridges[1]).fit(X[fit], groups[fit], environment[fit])
     traits = pch.transform(X[val])
-    expected = selection.mean_heritability(traits, groups[val], environment[val])
+    expected = h2opt.anova_heritability(traits, groups[val], environment[val]).mean()
     assert fold_scores[0, 1] == pytest.approx(expected)
     assert h2opt.selection.RIDGES[0] == pytest.approx(1e-4)

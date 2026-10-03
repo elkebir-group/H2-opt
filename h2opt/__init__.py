@@ -1,6 +1,7 @@
 """H2-opt: self-supervised discovery of heritable traits in high-throughput phenotyping data."""
 
 from . import baselines, selection
+from .decorrelation import Decorrelation
 from .heritability import (
     AnovaDesign,
     Henderson3,
@@ -12,13 +13,14 @@ from .heritability import (
 from .io import load_npz
 from .linear import LinearH2opt
 from .models import AutoEncoder, ConvModel, LinearModel, TraitModels
-from .simulate import encode_latent
-from .train import decorrelate, project_out, train
+from .simulate import encode_latent, latent_scale
+from .train import synthetic_traits, train
 
 __all__ = [
     "AnovaDesign",
     "AutoEncoder",
     "ConvModel",
+    "Decorrelation",
     "Henderson3",
     "LinearH2opt",
     "LinearModel",
@@ -26,12 +28,12 @@ __all__ = [
     "anova_heritability",
     "baselines",
     "selection",
-    "decorrelate",
     "encode_latent",
     "genetic_covariance",
     "grouped_variance",
+    "latent_scale",
     "load_npz",
-    "project_out",
     "remove_environment",
+    "synthetic_traits",
     "train",
 ]

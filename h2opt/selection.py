@@ -2,29 +2,29 @@
 
 PCH and LinearH2opt both penalize ridge * v * |w|^2 (v the mean variance of the measurements),
 so they share one grid and one rule: the ridge whose traits have the highest mean heritability on
-held-out groups, averaged over folds of the groups.
+held-out groups, averaged over folds of the groups. Also the assignment of groups to folds.
 """
 
 import numpy as np
-import torch
 
-from .heritability import _as_environment, anova_heritability
+from .heritability import _as_environment
 
 # ridge 1 is the penalty of input noise with the standard deviation of a typical measurement.
 RIDGES = tuple(float(r) for r in np.logspace(-4, 2, 13))
 
 
+def per_group(groups, draw):
+    """One value per group, given to every individual of the group.
+
+    draw(c) returns the values of the c groups, in the sorted order of their labels."""
+    _, inverse = np.unique(np.asarray(groups), return_inverse=True)
+    return np.asarray(draw(inverse.max() + 1))[inverse]
+
+
 def group_folds(groups, n_folds=5, seed=0):
     """Fold (0..n_folds-1) of each individual; all individuals of a group share a fold, and the
     groups are spread evenly over the folds in a random order."""
-    _, inverse = np.unique(np.asarray(groups), return_inverse=True)
-    return (np.random.RandomState(seed).permutation(inverse.max() + 1) % n_folds)[inverse]
-
-
-def mean_heritability(traits, groups, environment):
-    """Mean ANOVA heritability of the columns of the array traits."""
-    traits = torch.tensor(np.asarray(traits, dtype=np.float64))
-    return anova_heritability(traits, groups, environment).mean().item()
+    return per_group(groups, lambda c: np.random.RandomState(seed).permutation(c) % n_folds)
 
 
 def cross_validate(X, groups, environment, score_fold, n_folds=5, seed=0):

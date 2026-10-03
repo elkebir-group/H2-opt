@@ -28,10 +28,12 @@ installs this checkout as an editable sibling (`../H2-opt`).
 | Module | Content |
 |---|---|
 | `heritability.py` | `anova_heritability`, `AnovaDesign`, `Henderson3`, `genetic_covariance` |
-| `models.py`, `train.py` | trait models and the RMSprop training loop of the paper |
+| `models.py`, `train.py` | trait models; the RMSprop training loop of the paper, `synthetic_traits` |
+| `decorrelation.py` | `Decorrelation`: traits made uncorrelated on training individuals, in order |
 | `linear.py` | `LinearH2opt`: linear traits trained to convergence with L-BFGS in float64 |
 | `baselines.py` | PCA, genetic PCA, LDA, PCH (ridge), most heritable features |
-| `simulate.py` | `encode_latent`: latent traits to simulated spectra |
+| `selection.py` | ridge grid, group folds, cross-validated heritability (`tune` of PCH and L-BFGS) |
+| `simulate.py` | `latent_scale`, `encode_latent`: latent traits to simulated spectra |
 | `io.py` | `load_npz` |
 
 ## Conventions: code, naming, prose

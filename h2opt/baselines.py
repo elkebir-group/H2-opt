@@ -2,16 +2,16 @@
 
 Each baseline is a linear map fitted on training individuals: fit(X, groups, environment) then
 transform(X). Traits are centered by the training mean and made uncorrelated on the training
-individuals (Gram-Schmidt in order), like H2-opt's traits. All computations happen in the span of
+individuals by Decorrelation, like H2-opt's traits. All computations happen in the span of
 the centered training data, so the number of measurements may far exceed the number of individuals
 (e.g. image pixels).
 """
 
 import numpy as np
-import torch
 
+from .decorrelation import Decorrelation
 from .heritability import _as_environment, anova_heritability
-from .selection import RIDGES, cross_validate, mean_heritability
+from .selection import RIDGES, cross_validate
 
 
 def _group_center(Z, labels):
@@ -57,9 +57,8 @@ class LinearBaseline:
 
         W = V @ self._directions(Z, groups, environment, n_features=X.shape[1])
 
-        # Gram-Schmidt on the training traits: Y = Q R, keep the scale of each trait's own component
-        _, R = np.linalg.qr(Xc @ W)
-        self.components_ = W @ np.linalg.inv(R) @ np.diag(np.diag(R))
+        # Xc @ W has mean 0, so the map of the decorrelated traits is linear in Xc
+        self.components_ = W @ Decorrelation().fit(Xc @ W).components_
         return self
 
     def transform(self, X):
@@ -133,14 +132,22 @@ class PCH(LinearBaseline):
         Returns (ridge with the best mean score, scores (len(ridges),), fold_scores).
         """
         def score_fold(X_fit, groups_fit, environment_fit, X_val, groups_val, environment_val):
-            return [mean_heritability(
+            return [anova_heritability(
                 cls(n_traits, ridge).fit(X_fit, groups_fit, environment_fit).transform(X_val),
-                groups_val, environment_val) for ridge in ridges]
+                groups_val, environment_val).mean() for ridge in ridges]
 
         scores, fold_scores = cross_validate(X, groups, environment, score_fold, n_folds, seed)
         return ridges[int(np.argmax(scores))], scores, fold_scores
 
     def _directions(self, Z, groups, environment, n_features):
+        A, B = self.heritability_forms(Z, groups, environment)
+        B = B + self.ridge * np.trace(B) / n_features * np.eye(B.shape[0])
+        return _top_generalized(A, B, self.n_traits)
+
+    @staticmethod
+    def heritability_forms(Z, groups, environment=None):
+        """Matrices A and B with w'A w / w'B w = anova_heritability(Z w) for every w."""
+        environment = _as_environment(environment, len(groups))
         _, inverse, counts = np.unique(groups, return_inverse=True, return_counts=True)
         keep = counts[inverse] >= 2
         Zc = Z[keep] - Z[keep].mean(axis=0)
@@ -151,11 +158,7 @@ class PCH(LinearBaseline):
         _, inverse_kept, counts_kept = np.unique(groups[keep], return_inverse=True,
                                                  return_counts=True)
         scale = (counts_kept / (counts_kept - 1.0))[inverse_kept]
-
-        A = Ze.T @ Ze - R.T @ (R * scale[:, None])
-        B = Zc.T @ Zc
-        B = B + self.ridge * np.trace(B) / n_features * np.eye(B.shape[0])
-        return _top_generalized(A, B, self.n_traits)
+        return Ze.T @ Ze - R.T @ (R * scale[:, None]), Zc.T @ Zc
 
 
 class MaxHeritabilityFeatures:
@@ -175,8 +178,7 @@ class MaxHeritabilityFeatures:
         X_fit = X - X.mean(axis=0)
         chosen = []
         for _ in range(self.n_traits):
-            heritability = anova_heritability(torch.tensor(X_fit).float(), groups, environment)
-            heritability = heritability.numpy()
+            heritability = anova_heritability(X_fit, groups, environment)
             heritability[np.isnan(heritability)] = 0
             heritability[np.array(chosen, dtype=int)] = 0
             best = int(np.argmax(heritability))
@@ -191,9 +193,8 @@ class MaxHeritabilityFeatures:
             X_fit[:, best] = 1
 
         self.features_ = np.array(chosen)
-        self.mean_ = X[:, self.features_].mean(axis=0)
-        _, R = np.linalg.qr(X[:, self.features_] - self.mean_)
-        self.components_ = np.linalg.inv(R) @ np.diag(np.diag(R))
+        decorrelation = Decorrelation().fit(X[:, self.features_])
+        self.mean_, self.components_ = decorrelation.mean_, decorrelation.components_
         return self
 
     def transform(self, X):

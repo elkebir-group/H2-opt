@@ -57,7 +57,7 @@ H = anova_heritability(torch.tensor(X[:, :10]).float(), groups, environment)
 
 ## Optimizing heritability
 
-`train` learns synthetic traits one at a time, each orthogonal to the earlier ones.
+`train` learns synthetic traits one at a time. In the loss, each trait is its residual after least-squares regression on the earlier traits, on the training individuals.
 `model` holds one model per trait (`TraitModels`), `X` is the n by m array of measurements, and `train_test` a length-n array with 0 for training and 1 for test individuals.
 The heritability is only optimized on the training individuals.
 
@@ -66,7 +66,7 @@ Example: train a linear model extracting 10 synthetic traits from the sorghum da
 ```python
 import numpy as np
 import torch
-from h2opt import load_npz, train, TraitModels, LinearModel
+from h2opt import load_npz, synthetic_traits, train, TraitModels, LinearModel
 
 X = np.concatenate((load_npz('data/examples/X_file1.npz'), load_npz('data/examples/X_file2.npz')))
 groups = load_npz('data/examples/genotypes.npz')
@@ -78,10 +78,11 @@ model = TraitModels(n_traits, LinearModel, X.shape[1])
 train(model, X, groups, environment, train_test, model_file='model.pt', n_traits=n_traits,
       n_iter=10000, learning_rate=1e-5, noise_level=0.005)
 
-traits = model(torch.tensor(X).float())  # n by n_traits synthetic traits (before decorrelation)
+# n by n_traits synthetic traits, made uncorrelated on the training individuals
+traits = synthetic_traits(model, X, train_test == 0)
 ```
 
-Options: `n_iter` steps per trait (default 10000), `learning_rate` for RMSprop (default 1e-4), `noise_level` for data augmentation, the maximum of the uniform noise added to the measurements at each step (default 0.1), `model_file` to save the model every `save_every` steps (default 1000) and after each trait, and `device` (e.g. `"cuda"`) to train on a GPU.
+Options: `n_iter` steps per trait (default 10000), `learning_rate` for RMSprop (default 1e-4), `noise_level` for data augmentation (default 0.1): the maximum of the uniform noise added to the measurements at each step, or its standard deviation with `noise='normal'`, `clip` for the standardized traits in the loss (default 2, `None` for no clipping), `model_file` to save the model every `save_every` steps (default 1000) and after each trait, and `device` (e.g. `"cuda"`) to train on a GPU.
 `ConvModel` is a convolutional alternative to `LinearModel` for spectra.
 
 ### Linear H2-opt with L-BFGS
@@ -91,13 +92,12 @@ The penalty equals the effect of adding independent noise with standard deviatio
 `LinearH2opt.tune` chooses one ridge for all traits by cross-validation over groups: the mean heritability of the traits on held-out groups, at convergence, averaged over the folds.
 
 ```python
-import numpy as np
 from h2opt import LinearH2opt
 
 is_train = train_test == 0
-ridges = list(np.logspace(-4, 2, 13))
+# ridges default to h2opt.selection.RIDGES (1e-4 to 100)
 ridge, scores, fold_scores = LinearH2opt.tune(X[is_train], groups[is_train], environment[is_train],
-                                              ridges, n_traits=5, n_folds=5)
+                                              n_traits=5, n_folds=5)
 model = LinearH2opt(n_traits=5, ridge=ridge).fit(X[is_train], groups[is_train], environment[is_train])
 traits = model.transform(X)
 ```
@@ -105,7 +105,7 @@ traits = model.transform(X)
 ## Baselines
 
 `h2opt.baselines` has linear baselines with a common interface: `fit(X, groups, environment)` on the training individuals, then `transform(X)`.
-Their traits are centered and made uncorrelated on the training individuals, like H2-opt's.
+Their traits are centered and made uncorrelated on the training individuals (`Decorrelation`), like H2-opt's.
 
 - `PCA(n_traits)`: principal components of the measurements.
 - `GeneticPCA(n_traits)`: principal components of the ANOVA estimate of the genetic covariance.
@@ -124,20 +124,21 @@ traits = pch.transform(X)
 ## Generating simulated hyperspectral measurements
 
 `encode_latent` embeds latent traits into simulated spectra with a pretrained autoencoder.
-Each latent trait is matched to the mean and spread of one latent dimension of a reference set of real measurements.
+Each latent trait, in standard units, is matched to the mean and spread of one latent dimension over the encodings of a reference set of real measurements (`latent_scale`).
 The pretrained autoencoder in `data/examples/autoencoder.pt` has 5 latent dimensions.
 
 Example with the latent traits simulated with simplePHENOTYPES in the paper:
 
 ```python
 import numpy as np
-from h2opt import load_npz, encode_latent, AutoEncoder
+from h2opt import load_npz, encode_latent, latent_scale, AutoEncoder
 
 autoencoder = AutoEncoder.load('data/examples/autoencoder.pt')
 reference = np.concatenate((load_npz('data/examples/X_file1.npz'), load_npz('data/examples/X_file2.npz')))
 latent = load_npz('data/examples/simulatedLatentTraits.npz')
+latent = (latent - latent.mean(axis=0)) / latent.std(axis=0)
 
-X_simulated = encode_latent(latent, autoencoder, reference)
+X_simulated = encode_latent(latent, autoencoder, latent_scale(autoencoder, reference))
 ```
 
 ## Tests

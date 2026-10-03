@@ -142,7 +142,7 @@ class AnovaDesign:
 
 def anova_heritability(Y, groups, environment=None, return_variance=False,
                        env_adjusted_total=False):
-    """ANOVA heritability of each column of the (n, k) tensor Y.
+    """ANOVA heritability of each column of the (n, k) tensor or array Y.
 
     groups: length-n labels of genetically related groups (e.g. clones or families).
     environment: (n, g) categorical environmental variables, or None.
@@ -153,9 +153,15 @@ def anova_heritability(Y, groups, environment=None, return_variance=False,
     narrow-sense. Groups with a single member are dropped. With env_adjusted_total, the denominator
     is V_env. With return_variance, returns (genetic variance, total variance) per individual
     instead. For repeated calls on the same individuals, use AnovaDesign.
+
+    A tensor gives tensors (differentiable in Y); an array is computed in float64 and gives arrays.
     """
-    design = AnovaDesign(groups, environment, Y.device)
-    return design.heritability(Y, return_variance, env_adjusted_total)
+    if isinstance(Y, torch.Tensor):
+        design = AnovaDesign(groups, environment, Y.device)
+        return design.heritability(Y, return_variance, env_adjusted_total)
+    Y = torch.tensor(np.asarray(Y, dtype=np.float64))
+    result = AnovaDesign(groups, environment).heritability(Y, return_variance, env_adjusted_total)
+    return tuple(r.numpy() for r in result) if return_variance else result.numpy()
 
 
 def genetic_covariance(Y, N, groups, environment=None, correlation=False):
