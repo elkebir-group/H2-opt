@@ -87,3 +87,19 @@ def test_pch_more_measurements_than_individuals(sorghum):
     rows = np.arange(200)
     Y = h2opt.baselines.PCH(2, ridge=1e-3).fit_transform(X[rows], groups[rows], environment[rows])
     assert Y.shape == (200, 2) and np.all(np.isfinite(Y))
+
+
+def test_henderson3_is_unbiased_with_confounded_environment():
+    groups = np.repeat(np.arange(60), 15)
+    subgroups = np.tile(np.repeat(np.arange(3), 5), 60)
+    plot = groups * 3 + subgroups
+    perm = np.random.RandomState(0).permutation(180)
+    environment = np.c_[(perm // 90)[plot], (perm % 30)[plot]]
+    model = h2opt.Henderson3(groups, environment, subgroups=subgroups)
+    estimates = []
+    for seed in range(200):
+        r = np.random.RandomState(seed)
+        y = (r.normal(size=60)[groups] + 0.7 * r.normal(size=180)[plot] + r.normal(size=900)
+             + r.normal(size=30)[environment[:, 1]] + 2 * environment[:, 0])
+        estimates.append(model.components(torch.tensor(y)).numpy()[:, 0])
+    np.testing.assert_allclose(np.mean(estimates, axis=0), [1.0, 0.49, 1.0], atol=0.03)

@@ -142,7 +142,7 @@ class PCH(LinearBaseline):
 
 
 class MaxHeritabilityFeatures:
-    """Greedily select the n_traits most heritable measurements (e.g. wavelengths) on the training individuals.
+    """Greedily select the n_traits most heritable measurements (features) on the training individuals.
 
     After each pick, the chosen measurement is projected out of all others before the next pick.
     transform returns the selected measurements, centered and made uncorrelated on the training individuals.

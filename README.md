@@ -31,6 +31,10 @@ H = anova_heritability(traits, groups, environment)
 If groups are clones, this is the broad-sense heritability. If the individuals in a group have genetic relatedness r, the narrow-sense heritability is H / r.
 Groups with a single individual are ignored.
 
+`Henderson3(groups, environment, subgroups=None)` estimates heritability by Henderson's Method III, treating environment as fixed and groups (and optional subgroups nested in groups, e.g. plots of one family) as random effects.
+Unlike `anova_heritability`, it stays unbiased when environment and groups are confounded, and it separates shared subgroup effects from genetic variance.
+It precomputes n by n matrices for a fixed set of individuals, then `Henderson3(...).heritability(traits)` is differentiable.
+
 Example: the heritability of the first 10 wavelengths of the sorghum hyperspectral data in `data/examples` (the measurements are split over two files because of GitHub file size limits).
 
 ```python
@@ -84,7 +88,7 @@ Their traits are centered and made uncorrelated on the training individuals, lik
 - `GeneticPCA(n_traits)`: principal components of the ANOVA estimate of the genetic covariance.
 - `LDA(n_traits)`: linear discriminant analysis of the groups (unregularized).
 - `PCH(n_traits, ridge)`: principal components of heritability, maximizing the ANOVA heritability above with ridge regularization.
-- `MaxHeritabilityFeatures(n_traits)`: the most heritable individual measurements (e.g. wavelengths), selected greedily.
+- `MaxHeritabilityFeatures(n_traits)`: the most heritable individual features, selected greedily.
 
 ```python
 from h2opt.baselines import PCH

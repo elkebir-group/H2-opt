@@ -155,3 +155,76 @@ def genetic_covariance(Y, N, groups, environment=None, correlation=False):
         covariance[var_N == 0] = 0
 
     return covariance
+
+
+def _dummies(labels, drop_first=False):
+    _, inverse = np.unique(labels, return_inverse=True)
+    D = np.zeros((len(labels), inverse.max() + 1))
+    D[np.arange(len(labels)), inverse] = 1
+    return D[:, 1:] if drop_first else D
+
+
+def _projection(X):
+    """Orthogonal projection onto the column space of X (rank-deficient X allowed)."""
+    U, s, _ = np.linalg.svd(X, full_matrices=False)
+    U = U[:, s > s[0] * 1e-10]
+    return U @ U.T
+
+
+class Henderson3:
+    """Heritability by Henderson's Method III for y = environment (fixed) + group + subgroup-within-group + residual.
+
+    groups: length-n labels of genetically related groups (e.g. families).
+    environment: (n, g) categorical environmental variables (fixed effects), or None.
+    subgroups: optional length-n labels of units nested in groups that share a non-genetic effect
+    (e.g. plots of one family); labels only need to be unique within a group.
+
+    With P(.) the projection onto the column space of the given design matrices,
+        Q_group    = P(env, group) - P(env)
+        Q_subgroup = P(env, group, subgroup) - P(env, group)
+        Q_residual = I - P(env, group, subgroup)
+    and E[y'Q y] is linear in the variance components, which gives unbiased estimates however environment and
+    groups are confounded. The (n, n) forms are computed once per design, so this suits a fixed set of
+    individuals; heritability(Y) is then differentiable in Y.
+    """
+
+    def __init__(self, groups, environment=None, subgroups=None, device='cpu'):
+        groups = np.asarray(groups).astype(str)
+        n = len(groups)
+        environment = _as_environment(environment, n)
+        E = np.concatenate([np.ones((n, 1))] + [_dummies(environment[:, a], True) for a in range(environment.shape[1])], 1)
+        Z = [_dummies(groups)]
+        if subgroups is not None:
+            Z.append(_dummies(np.char.add(np.char.add(groups, '|'), np.asarray(subgroups).astype(str))))
+
+        projections = [_projection(E)]
+        design = E
+        for Zi in Z:
+            design = np.concatenate([design, Zi], 1)
+            projections.append(_projection(design))
+        Q = [projections[i + 1] - projections[i] for i in range(len(Z))] + [np.eye(n) - projections[-1]]
+
+        # E[y'Q_i y] = sum_j tr(Q_i Z_j Z_j') s2_j + tr(Q_i) s2_residual
+        ZZ = [Zi @ Zi.T for Zi in Z]
+        C = np.array([[np.einsum('ij,ji->', Qi, ZZj) for ZZj in ZZ] + [np.trace(Qi)] for Qi in Q])
+        self.Cinv = torch.tensor(np.linalg.inv(C), device=device, dtype=torch.float64)
+        self.Q = torch.tensor(np.stack(Q), device=device, dtype=torch.float64)
+
+    def components(self, Y):
+        """Variance components of each column of Y: rows are group, (subgroup,) residual."""
+        Y = Y.to(self.Q.dtype)
+        if Y.dim() == 1:
+            Y = Y[:, None]
+        quadratic = torch.stack([((Qi @ Y) * Y).sum(0) for Qi in self.Q])
+        return self.Cinv @ quadratic
+
+    def heritability(self, Y, denominator='total'):
+        """Group variance over the total variance of Y ('total', as anova_heritability) or over the sum of the
+        variance components ('components', the mixed-model convention)."""
+        components = self.components(Y)
+        if denominator == 'total':
+            Y = Y.to(self.Q.dtype)
+            if Y.dim() == 1:
+                Y = Y[:, None]
+            return components[0] / Y.var(0)
+        return components[0] / components.sum(0)
