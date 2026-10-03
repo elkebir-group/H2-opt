@@ -1,0 +1,25 @@
+"""The sorghum example data in data/examples, shared by the tests."""
+
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+import h2opt
+
+EXAMPLES = Path(__file__).resolve().parent.parent / 'data' / 'examples'
+
+
+@pytest.fixture(scope='session')
+def examples():
+    """Directory of the example data."""
+    return EXAMPLES
+
+
+@pytest.fixture(scope='session')
+def sorghum():
+    """Measurements X (plants x wavelengths), genotype labels and environment of the sorghum
+    examples."""
+    X = np.concatenate([h2opt.load_npz(EXAMPLES / f'X_file{i}.npz') for i in (1, 2)])
+    groups = h2opt.load_npz(EXAMPLES / 'genotypes.npz')
+    return X, groups, h2opt.load_npz(EXAMPLES / 'environment.npz')

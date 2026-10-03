@@ -1,0 +1,18 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.9
+    hooks:
+      - id: ruff
+        args: [--fix]
+
+  # US spelling plus ordinary typos, matching prolyG's convention. Run it by hand
+  # with `pre-commit run codespell --all-files`; a bare `codespell` reads none of
+  # these flags and is a weaker check. `--regex` drops hyphen and apostrophe from
+  # the word pattern, so `colour-coded` is seen.
+  - repo: https://github.com/codespell-project/codespell
+    rev: v2.4.3
+    hooks:
+      - id: codespell
+        args:
+          - --builtin=clear,rare,en-GB_to_en-US
+          - --regex=[\w]+

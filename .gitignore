@@ -1,5 +1,51 @@
+# Python
 __pycache__/
+*.py[cod]
+*$py.class
 *.egg-info/
+*.egg
+.eggs/
+
+# Build / dist
+build/
+dist/
+wheels/
+*.whl
+
+# uv lockfile (not committed, matching prolyG's convention)
+uv.lock
+
+# Test / coverage
+.pytest_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Virtual environments
 .venv/
+venv/
+env/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Data: only the small examples used by the README and the tests are committed.
+# Real datasets live with the analyses, in H2-opt-analysis.
 data/*
 !data/examples/
+
+# Models written by the README examples.
+/model.pt
+
+# Top-level scratch directory: agent <-> user artifacts that persist across
+# Claude Code sessions (handoff notes, ad-hoc notes, throwaway data). Unlike
+# /tmp/ it survives restarts. Committed code never cites a .scratch/ path.
+.scratch/
+
+# Local Claude Code session state.
+.claude/*

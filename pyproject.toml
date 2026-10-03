@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools>=61"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [project]
 name = "h2opt"
@@ -8,10 +8,61 @@ version = "0.2.0"
 description = "H2-opt: self-supervised discovery of heritable traits in high-throughput phenotyping data"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["numpy", "torch"]
+license = { text = "MIT" }
+authors = [
+    { name = "El-Kebir Lab", email = "melkebir@illinois.edu" },
+]
+dependencies = [
+    "numpy>=1.26,<3",
+    "torch>=2.0,<3",
+]
 
 [project.optional-dependencies]
-test = ["pytest"]
+dev = [
+    "pytest>=7",
+    "pytest-cov",
+    "ruff",
+    "pre-commit",
+]
 
-[tool.setuptools]
+[project.urls]
+Homepage = "https://github.com/elkebir-group/H2-opt"
+Analysis = "https://github.com/elkebir-group/H2-opt-analysis"
+
+[tool.hatch.build.targets.wheel]
 packages = ["h2opt"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B"]
+# E: pycodestyle errors;  F: pyflakes;  I: isort;
+# N: pep8-naming;  UP: pyupgrade;  B: flake8-bugbear
+
+[tool.ruff.lint.pep8-naming]
+# Math notation allowed as variables (N806) and arguments (N803). The explicit
+# list is intentional: it keeps the allowlist from absorbing typos. Add a name
+# here when the math notation grows.
+extend-ignore-names = [
+    # Measurements (X: individuals x features), traits (Y), latent or design
+    # matrices (Z), group sizes (N) and heritability (H).
+    "X", "Y", "Z", "N", "H",
+    # Linear-algebra factors and generic matrices (SVD U/V/Vt, Gram/covariance
+    # A/B/C/D/E/G/Q/R/W).
+    "A", "B", "C", "D", "E", "G", "Q", "R", "U", "V", "Vt", "W",
+    # Centered, sorted, squared and per-group variants of X, Y and Z.
+    "Xc", "X_fit", "X_train", "X_train_clean",
+    "Y2", "Y_basis", "Y_copy", "Y_cumsum", "Y_raw", "Y_sorted", "Y_sq_cumsum",
+    "Zc", "Ze", "Zi", "ZZ",
+    # Variance components of Y and N.
+    "var_N", "var_Y", "var_YN",
+    # Validation measurements projected on the eigenbasis V.
+    "val_XV", "_validation_XV",
+    # torch.nn.functional, by PyTorch convention.
+    "F",
+]

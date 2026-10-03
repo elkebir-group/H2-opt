@@ -8,15 +8,20 @@ H2-opt: A novel self-supervised algorithm to mine high-throughput phenotyping da
 H2-opt learns synthetic traits from high-throughput phenotyping (HTP) measurements that maximize heritability.
 It needs only the measurements and labels of genetically related groups (e.g. clones or families); no genotype data is used in training.
 
-The code that reproduces the analyses and figures of the paper is in [H2-opt-analysis](https://github.com/elkebir-group/H2-opt-analysis).
+The code that reproduces the analyses and figures of the paper is in
+[H2-opt-analysis](https://github.com/elkebir-group/H2-opt-analysis).
 
-## Installation
+## Install
 
-H2-opt requires Python 3.10+ with PyTorch and numpy.
+H2-opt needs Python 3.10+, PyTorch and numpy. The project uses [uv](https://docs.astral.sh/uv/).
 
 ```bash
-pip install .
+uv sync --all-extras        # creates .venv with the package and the dev tools
+uv run pre-commit install   # one-time, after cloning: runs ruff and codespell on commit
 ```
+
+Prefix the commands below with `uv run`, or activate `.venv` first. Plain `pip install .` also
+works if you only need the package.
 
 ## Calculating ANOVA heritability
 
@@ -133,6 +138,14 @@ X_simulated = encode_latent(latent, autoencoder, reference)
 ## Tests
 
 ```bash
-pip install .[test]
-pytest tests
+uv run --all-extras pytest                      # the suite
+uv run --all-extras pytest tests/test_linear.py # narrow by path or -k while iterating
 ```
+
+The CUDA test is skipped when no GPU is present.
+
+## Related repositories
+
+- [`elkebir-group/H2-opt-analysis`](https://github.com/elkebir-group/H2-opt-analysis)
+  (private): the analyses and figures of the paper (sorghum, Miscanthus, metabolomics,
+  simulations). It installs this package from a sibling checkout.

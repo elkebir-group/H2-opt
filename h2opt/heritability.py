@@ -6,7 +6,7 @@ import torch.nn.functional as F
 
 
 class _Grouping:
-    """Sort order of a label array and the position of each group in that order, as tensors on a device."""
+    """Sort order of a label array and the position of each group in it, as tensors on a device."""
 
     def __init__(self, labels, device):
         order = np.argsort(labels)
@@ -30,7 +30,7 @@ class _Grouping:
 
 
 def _as_environment(environment, n):
-    """Environment as an (n, g) array of categorical labels; None means no environmental variables."""
+    """Environment as an (n, g) array of categorical labels; None means no environment."""
     if environment is None:
         return np.zeros((n, 0))
     environment = np.asarray(environment)
@@ -63,7 +63,8 @@ def _grouped_variance(Y, grouping):
 def _remove_environment(Y, groupings):
     Y = Y.clone()
     for grouping in groupings:
-        Y_sorted = torch.cat((torch.zeros((1, Y.shape[1]), dtype=Y.dtype, device=Y.device), Y[grouping.order]))
+        zeros = torch.zeros((1, Y.shape[1]), dtype=Y.dtype, device=Y.device)
+        Y_sorted = torch.cat((zeros, Y[grouping.order]))
         Y_cumsum = torch.cumsum(Y_sorted, dim=0)
         sums = Y_cumsum[grouping.end_plus_one] - Y_cumsum[grouping.start]
         means = sums / grouping.sizes(Y.dtype).reshape((-1, 1))
@@ -85,14 +86,16 @@ def remove_environment(Y, environment):
     Returns a new tensor; Y is not modified.
     """
     environment = _as_environment(environment, Y.shape[0])
-    return _remove_environment(Y, [_Grouping(environment[:, a], Y.device) for a in range(environment.shape[1])])
+    groupings = [_Grouping(environment[:, a], Y.device) for a in range(environment.shape[1])]
+    return _remove_environment(Y, groupings)
 
 
 class AnovaDesign:
-    """Groups and environment of a fixed set of individuals, preprocessed once for repeated anova_heritability calls.
+    """Groups and environment of fixed individuals, preprocessed once for repeated calls.
 
-    AnovaDesign(groups, environment, device).heritability(Y) equals anova_heritability(Y, groups, environment)
-    but does the sorting and indexing of the labels only once (e.g. once per training run instead of every step).
+    AnovaDesign(groups, environment, device).heritability(Y) equals
+    anova_heritability(Y, groups, environment) but does the sorting and indexing of the labels only
+    once (e.g. once per training run instead of every step).
     """
 
     def __init__(self, groups, environment=None, device='cpu'):
@@ -105,7 +108,8 @@ class AnovaDesign:
             groups, environment = groups[keep], environment[keep]
             self.keep = torch.tensor(keep, device=device)
         self.groups = _Grouping(groups, device)
-        self.environment = [_Grouping(environment[:, a], device) for a in range(environment.shape[1])]
+        self.environment = [_Grouping(environment[:, a], device)
+                            for a in range(environment.shape[1])]
 
     def heritability(self, Y, return_variance=False, env_adjusted_total=False):
         """See anova_heritability."""
@@ -136,20 +140,22 @@ class AnovaDesign:
         return (variance_env - variance_within) / variance_total
 
 
-def anova_heritability(Y, groups, environment=None, return_variance=False, env_adjusted_total=False):
+def anova_heritability(Y, groups, environment=None, return_variance=False,
+                       env_adjusted_total=False):
     """ANOVA heritability of each column of the (n, k) tensor Y.
 
     groups: length-n labels of genetically related groups (e.g. clones or families).
     environment: (n, g) categorical environmental variables, or None.
 
-    The heritability is (V_env - V_within) / V_total, where V_env is the variance left after removing
-    environmental group means and V_within the within-group variance. With clonal groups this is
-    broad-sense heritability; for groups with genetic relatedness r, divide by r for narrow-sense.
-    Groups with a single member are dropped. With env_adjusted_total, the denominator is V_env.
-    With return_variance, returns (genetic variance, total variance) per individual instead.
-    For repeated calls on the same individuals, use AnovaDesign.
+    The heritability is (V_env - V_within) / V_total, where V_env is the variance left after
+    removing environmental group means and V_within the within-group variance. With clonal groups
+    this is broad-sense heritability; for groups with genetic relatedness r, divide by r for
+    narrow-sense. Groups with a single member are dropped. With env_adjusted_total, the denominator
+    is V_env. With return_variance, returns (genetic variance, total variance) per individual
+    instead. For repeated calls on the same individuals, use AnovaDesign.
     """
-    return AnovaDesign(groups, environment, Y.device).heritability(Y, return_variance, env_adjusted_total)
+    design = AnovaDesign(groups, environment, Y.device)
+    return design.heritability(Y, return_variance, env_adjusted_total)
 
 
 def genetic_covariance(Y, N, groups, environment=None, correlation=False):
@@ -201,7 +207,9 @@ def _projection(X):
 
 
 class Henderson3:
-    """Heritability by Henderson's Method III for y = environment (fixed) + group + subgroup-within-group + residual.
+    """Heritability by Henderson's Method III.
+
+    The model is y = environment (fixed) + group + subgroup-within-group + residual.
 
     groups: length-n labels of genetically related groups (e.g. families).
     environment: (n, g) categorical environmental variables (fixed effects), or None.
@@ -212,26 +220,30 @@ class Henderson3:
         Q_group    = P(env, group) - P(env)
         Q_subgroup = P(env, group, subgroup) - P(env, group)
         Q_residual = I - P(env, group, subgroup)
-    and E[y'Q y] is linear in the variance components, which gives unbiased estimates however environment and
-    groups are confounded. The (n, n) forms are computed once per design, so this suits a fixed set of
-    individuals; heritability(Y) is then differentiable in Y.
+    and E[y'Q y] is linear in the variance components, which gives unbiased estimates however
+    environment and groups are confounded. The (n, n) forms are computed once per design, so this
+    suits a fixed set of individuals; heritability(Y) is then differentiable in Y.
     """
 
     def __init__(self, groups, environment=None, subgroups=None, device='cpu'):
         groups = np.asarray(groups).astype(str)
         n = len(groups)
         environment = _as_environment(environment, n)
-        E = np.concatenate([np.ones((n, 1))] + [_dummies(environment[:, a], True) for a in range(environment.shape[1])], 1)
+        env_dummies = [_dummies(environment[:, a], True) for a in range(environment.shape[1])]
+        E = np.concatenate([np.ones((n, 1))] + env_dummies, 1)
         Z = [_dummies(groups)]
         if subgroups is not None:
-            Z.append(_dummies(np.char.add(np.char.add(groups, '|'), np.asarray(subgroups).astype(str))))
+            subgroup_labels = np.char.add(np.char.add(groups, '|'),
+                                          np.asarray(subgroups).astype(str))
+            Z.append(_dummies(subgroup_labels))
 
         projections = [_projection(E)]
         design = E
         for Zi in Z:
             design = np.concatenate([design, Zi], 1)
             projections.append(_projection(design))
-        Q = [projections[i + 1] - projections[i] for i in range(len(Z))] + [np.eye(n) - projections[-1]]
+        Q = [projections[i + 1] - projections[i] for i in range(len(Z))]
+        Q.append(np.eye(n) - projections[-1])
 
         # E[y'Q_i y] = sum_j tr(Q_i Z_j Z_j') s2_j + tr(Q_i) s2_residual
         ZZ = [Zi @ Zi.T for Zi in Z]
@@ -248,8 +260,11 @@ class Henderson3:
         return self.Cinv @ quadratic
 
     def heritability(self, Y, denominator='total'):
-        """Group variance over the total variance of Y ('total', as anova_heritability) or over the sum of the
-        variance components ('components', the mixed-model convention)."""
+        """Group variance over a denominator.
+
+        The denominator is the total variance of Y ('total', as anova_heritability) or the sum of
+        the variance components ('components', the mixed-model convention).
+        """
         components = self.components(Y)
         if denominator == 'total':
             Y = Y.to(self.Q.dtype)

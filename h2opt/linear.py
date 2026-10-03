@@ -7,7 +7,7 @@ from .heritability import AnovaDesign
 
 
 def _residualize(y, previous, rows=None):
-    """Least-squares residual of y on the earlier traits, coefficients from the given rows (default all).
+    """Least-squares residual of y on the earlier traits, fitted on the given rows (default all).
 
     Returns the residual, the mean of the earlier traits on the rows and the coefficients.
     """
@@ -25,16 +25,17 @@ def _residualize(y, previous, rows=None):
 
 
 def _apply(y, mean, coef, previous):
-    """Residualize the trait values y on the earlier traits with coefficients fitted on the training individuals."""
+    """Residualize trait values y on the earlier traits with coefficients fitted in _residualize."""
     if mean is None:
         return y
     return y - (previous - mean) @ coef
 
 
 class _Spectrum:
-    """Eigendecomposition of the covariance of the training measurements, shared by fits with different ridges.
+    """Eigendecomposition of the training covariance, shared by fits with different ridges.
 
-    X V (the measurements in the eigenbasis) is precomputed so that a trait X w with w = V z costs one n x m product.
+    X V (the measurements in the eigenbasis) is precomputed so that a trait X w with w = V z costs
+    one n x m product.
     """
 
     def __init__(self, X):
@@ -55,19 +56,20 @@ def _as_float64(X):
 
 
 class LinearH2opt:
-    """Linear synthetic traits y = X w maximizing ANOVA heritability, trained one at a time with L-BFGS.
+    """Linear synthetic traits y = X w that maximize ANOVA heritability, trained one at a time.
 
-    Each trait maximizes gen(y) / (tot(y) + ridge * v * |w|^2) on the training individuals, where gen and tot are
-    the genetic and total variance of anova_heritability and v is the mean variance of the measurements; with
-    ridge -> 0 this is exactly the ANOVA heritability. Trait k is made uncorrelated with traits 1..k-1 on the
-    training individuals (least-squares residual). Optimization runs in float64 with L-BFGS (strong Wolfe line
-    search), over w = P u with P = (Cov(X) + ridge * v * I)^(-1/2): the same model and objective, better
-    conditioned. Unlike train, this converges, so n_iter (L-BFGS steps of up to 20 evaluations) acts as a
-    stopping point to tune, together with ridge, on validation individuals (see tune).
+    Each trait maximizes gen(y) / (tot(y) + ridge * v * |w|^2) on the training individuals, where
+    gen and tot are the genetic and total variance of anova_heritability and v is the mean variance
+    of the measurements; with ridge -> 0 this is exactly the ANOVA heritability. Trait k is made
+    uncorrelated with traits 1..k-1 on the training individuals (least-squares residual).
+    Optimization runs in float64 with L-BFGS (strong Wolfe line search), over w = P u with P =
+    (Cov(X) + ridge * v * I)^(-1/2): the same model and objective, better conditioned. Unlike train,
+    this converges, so n_iter (L-BFGS steps of up to 20 evaluations) acts as a stopping point to
+    tune, together with ridge, on validation individuals (see tune).
 
-    fit(X, groups, environment, validation=None): validation is an optional (X, groups, environment) tuple;
-    the heritability of each trait on it after every step is stored in validation_curves_ (n_traits, n_iter).
-    transform(X) returns the (n, n_traits) traits.
+    fit(X, groups, environment, validation=None): validation is an optional (X, groups, environment)
+    tuple; the heritability of each trait on it after every step is stored in validation_curves_
+    (n_traits, n_iter). transform(X) returns the (n, n_traits) traits.
     """
 
     def __init__(self, n_traits=1, ridge=1e-4, n_iter=100, seed=0):
@@ -76,13 +78,16 @@ class LinearH2opt:
         self.n_iter = n_iter
         self.seed = seed
 
-    def fit(self, X, groups, environment=None, validation=None, _spectrum=None, _validation_XV=None):
+    def fit(self, X, groups, environment=None, validation=None, _spectrum=None,
+            _validation_XV=None):
         X = _as_float64(X)
         n, m = X.shape
         spectrum = _spectrum if _spectrum is not None else _Spectrum(X)
         design = AnovaDesign(groups, environment)
         if validation is not None:
-            val_XV = _validation_XV if _validation_XV is not None else _as_float64(validation[0]) @ spectrum.V
+            if _validation_XV is None:
+                _validation_XV = _as_float64(validation[0]) @ spectrum.V
+            val_XV = _validation_XV
             val_design = AnovaDesign(validation[1], validation[2])
             val_traits = torch.zeros((val_XV.shape[0], 0), dtype=torch.float64)
 
@@ -95,13 +100,16 @@ class LinearH2opt:
             # w = P u with u ~ N(0, I); in the eigenbasis w = V (d * z) with z = V' u
             torch.manual_seed(self.seed + k)
             z = (spectrum.V.T @ torch.randn(m, dtype=torch.float64)).requires_grad_(True)
-            optimizer = torch.optim.LBFGS([z], lr=1, max_iter=20, history_size=100, tolerance_grad=0,
-                                          tolerance_change=0, line_search_fn='strong_wolfe')
+            optimizer = torch.optim.LBFGS([z], lr=1, max_iter=20, history_size=100,
+                                          tolerance_grad=0, tolerance_change=0,
+                                          line_search_fn='strong_wolfe')
 
+            # closure runs only inside this iteration's optimizer.step, so binding the loop
+            # variables late is correct.
             def closure():
-                optimizer.zero_grad()
-                dz = d * z
-                y, _, _ = _residualize((spectrum.XV @ dz)[:, None], traits)
+                optimizer.zero_grad()  # noqa: B023
+                dz = d * z  # noqa: B023
+                y, _, _ = _residualize((spectrum.XV @ dz)[:, None], traits)  # noqa: B023
                 genetic, total = design.heritability(y, return_variance=True)
                 loss = -(genetic / (total + penalty_scale * (dz @ dz))).sum()
                 loss.backward()
@@ -124,13 +132,14 @@ class LinearH2opt:
                 self.coefs_.append(coef)
                 traits = torch.cat([traits, y], 1)
                 if validation is not None:
-                    val_traits = torch.cat([val_traits, _apply((val_XV @ dz)[:, None], mean, coef, val_traits)], 1)
+                    y_val = _apply((val_XV @ dz)[:, None], mean, coef, val_traits)
+                    val_traits = torch.cat([val_traits, y_val], 1)
         return self
 
     def transform(self, X):
         X = _as_float64(X)
         traits = torch.zeros((X.shape[0], 0), dtype=torch.float64)
-        for w, mean, coef in zip(self.weights_, self.means_, self.coefs_):
+        for w, mean, coef in zip(self.weights_, self.means_, self.coefs_, strict=True):
             traits = torch.cat([traits, _apply((X @ w)[:, None], mean, coef, traits)], 1)
         return traits.numpy()
 
@@ -141,8 +150,8 @@ class LinearH2opt:
     def tune(cls, X, groups, environment, validation, ridges, n_iter=100, seed=0):
         """Choose ridge and number of steps by the validation heritability of the first trait.
 
-        Fits one trait per ridge, sharing one eigendecomposition. Returns (ridge, steps, curves), where
-        curves is the (len(ridges), n_iter) validation heritability after every step.
+        Fits one trait per ridge, sharing one eigendecomposition. Returns (ridge, steps, curves),
+        where curves is the (len(ridges), n_iter) validation heritability after every step.
         """
         X = _as_float64(X)
         spectrum = _Spectrum(X)
@@ -150,6 +159,7 @@ class LinearH2opt:
         curves = np.zeros((len(ridges), n_iter))
         for i, ridge in enumerate(ridges):
             model = cls(1, ridge=ridge, n_iter=n_iter, seed=seed)
-            curves[i] = model.fit(X, groups, environment, validation, _spectrum=spectrum, _validation_XV=val_XV).validation_curves_[0]
+            model.fit(X, groups, environment, validation, _spectrum=spectrum, _validation_XV=val_XV)
+            curves[i] = model.validation_curves_[0]
         best, step = np.unravel_index(np.argmax(curves), curves.shape)
         return ridges[best], int(step) + 1, curves

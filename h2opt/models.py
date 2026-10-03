@@ -16,7 +16,7 @@ class LinearModel(nn.Module):
 
 
 class ConvModel(nn.Module):
-    """Two 1D convolutions (kernel 20, stride 5, 5 and 10 channels, ReLU) followed by a linear layer.
+    """Two 1D convolutions (kernel 20, stride 5, 5 and 10 channels, ReLU), then a linear layer.
 
     Input is (n, n_features), e.g. a spectrum per individual.
     """
@@ -59,7 +59,7 @@ class TraitModels(nn.Module):
 
 
 class AutoEncoder(nn.Module):
-    """Tanh autoencoder with one hidden layer, used to embed latent traits into simulated spectra."""
+    """Tanh autoencoder with one hidden layer, which embeds latent traits into simulated spectra."""
 
     def __init__(self, n_features, n_latent, hidden=100):
         super().__init__()
