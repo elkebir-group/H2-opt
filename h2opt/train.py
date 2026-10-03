@@ -58,7 +58,7 @@ def _synthetic_traits(Y, background):
 
 
 def train(model, X, groups, environment, train_test, model_file=None, n_traits=1, first_trait=0, n_iter=10000,
-          learning_rate=1e-4, noise_level=0.1, penalty=None, verbose=True, print_every=100, save_every=10):
+          learning_rate=1e-4, noise_level=0.1, penalty=None, device='cpu', verbose=True, print_every=100, save_every=10):
     """Train synthetic traits one at a time to maximize their ANOVA heritability on the training set.
 
     model: a TraitModels with at least n_traits traits; X: (n, m) measurements.
@@ -69,7 +69,8 @@ def train(model, X, groups, environment, train_test, model_file=None, n_traits=1
     given the model of the current trait and its raw (n_train, 1) output on the noisy training data. If model_file is given, the whole model is saved every save_every steps.
     Returns the model.
     """
-    X = torch.tensor(X).float()
+    X = torch.tensor(X).float().to(device)
+    model.to(device)
     groups = np.asarray(groups)
     environment = np.asarray(environment) if environment is not None else None
     train_test = np.asarray(train_test)
@@ -83,13 +84,13 @@ def train(model, X, groups, environment, train_test, model_file=None, n_traits=1
         if trait > 0:
             background = decorrelate(model(X, np.arange(trait)).detach())
         else:
-            background = torch.zeros((X.shape[0], 0))
+            background = torch.zeros((X.shape[0], 0), device=device)
 
         optimizer = torch.optim.RMSprop(model.parameters(), lr=learning_rate)
 
         for step in range(n_iter):
             X_train = X[is_train]
-            X_train = X_train + torch.rand(size=X_train.shape) * noise_level
+            X_train = X_train + torch.rand(size=X_train.shape, device=device) * noise_level
 
             Y_raw = model(X_train, np.array([trait]))
             Y = _synthetic_traits(Y_raw, background[is_train])
@@ -100,10 +101,10 @@ def train(model, X, groups, environment, train_test, model_file=None, n_traits=1
             if verbose and step % print_every == 0:
                 with torch.no_grad():
                     Y = _synthetic_traits(model(X, np.array([trait])), background)
-                    message = f'trait {trait} step {step}: train heritability {anova_heritability(Y[is_train], *subset(is_train)).numpy()}'
+                    message = f'trait {trait} step {step}: train heritability {anova_heritability(Y[is_train], *subset(is_train)).cpu().numpy()}'
                     if has_test:
                         is_test = train_test == 1
-                        message += f', test heritability {anova_heritability(Y[is_test], *subset(is_test)).numpy()}'
+                        message += f', test heritability {anova_heritability(Y[is_test], *subset(is_test)).cpu().numpy()}'
                 print(message)
 
             optimizer.zero_grad()

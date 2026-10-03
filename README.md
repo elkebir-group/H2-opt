@@ -76,7 +76,7 @@ train(model, X, groups, environment, train_test, model_file='model.pt', n_traits
 traits = model(torch.tensor(X).float())  # n by n_traits synthetic traits (before decorrelation)
 ```
 
-Options: `n_iter` steps per trait (default 10000), `learning_rate` for RMSprop (default 1e-4), `noise_level` for data augmentation, the maximum of the uniform noise added to the measurements at each step (default 0.1), and `model_file` to save the model every `save_every` steps.
+Options: `n_iter` steps per trait (default 10000), `learning_rate` for RMSprop (default 1e-4), `noise_level` for data augmentation, the maximum of the uniform noise added to the measurements at each step (default 0.1), `model_file` to save the model every `save_every` steps, and `device` (e.g. `"cuda"`) to train on a GPU.
 `ConvModel` is a convolutional alternative to `LinearModel` for spectra.
 
 ## Baselines

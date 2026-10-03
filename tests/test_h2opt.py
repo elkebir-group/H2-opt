@@ -103,3 +103,13 @@ def test_henderson3_is_unbiased_with_confounded_environment():
              + r.normal(size=30)[environment[:, 1]] + 2 * environment[:, 0])
         estimates.append(model.components(torch.tensor(y)).numpy()[:, 0])
     np.testing.assert_allclose(np.mean(estimates, axis=0), [1.0, 0.49, 1.0], atol=0.03)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason='needs CUDA')
+def test_train_on_cuda(sorghum):
+    X, groups, environment = sorghum
+    X = X[:, ::20]
+    model = h2opt.TraitModels(2, h2opt.LinearModel, X.shape[1])
+    h2opt.train(model, X, groups, environment, np.zeros(len(groups), dtype=int), n_traits=2, n_iter=5,
+                device='cuda', verbose=False)
+    assert next(model.parameters()).is_cuda
