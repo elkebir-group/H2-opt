@@ -61,8 +61,8 @@ extend-ignore-names = [
     "Zc", "Ze", "Zi", "ZZ",
     # Variance components of Y and N.
     "var_N", "var_Y", "var_YN",
-    # Validation measurements projected on the eigenbasis V.
-    "val_XV", "_validation_XV",
+    # Validation measurements projected on the eigenbasis V; fit/validation measurements.
+    "val_XV", "X_val",
     # torch.nn.functional, by PyTorch convention.
     "F",
 ]

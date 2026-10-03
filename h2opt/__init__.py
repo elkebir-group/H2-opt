@@ -1,6 +1,6 @@
 """H2-opt: self-supervised discovery of heritable traits in high-throughput phenotyping data."""
 
-from . import baselines
+from . import baselines, selection
 from .heritability import (
     AnovaDesign,
     Henderson3,
@@ -25,6 +25,7 @@ __all__ = [
     "TraitModels",
     "anova_heritability",
     "baselines",
+    "selection",
     "decorrelate",
     "encode_latent",
     "genetic_covariance",

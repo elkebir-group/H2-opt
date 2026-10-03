@@ -10,7 +10,8 @@ the centered training data, so the number of measurements may far exceed the num
 import numpy as np
 import torch
 
-from .heritability import anova_heritability
+from .heritability import _as_environment, anova_heritability
+from .selection import RIDGES, cross_validate, mean_heritability
 
 
 def _group_center(Z, labels):
@@ -44,10 +45,7 @@ class LinearBaseline:
     def fit(self, X, groups, environment=None):
         X = np.asarray(X, dtype=float)
         groups = np.asarray(groups)
-        if environment is not None:
-            environment = np.asarray(environment)
-            if environment.ndim == 1:
-                environment = environment.reshape((-1, 1))
+        environment = _as_environment(environment, len(groups))
 
         self.mean_ = X.mean(axis=0)
         Xc = X - self.mean_
@@ -126,14 +124,29 @@ class PCH(LinearBaseline):
         super().__init__(n_traits)
         self.ridge = ridge
 
+    @classmethod
+    def tune(cls, X, groups, environment, n_traits, ridges=RIDGES, n_folds=5, seed=0):
+        """Choose the ridge by cross-validated heritability, as LinearH2opt.tune does.
+
+        For each fold of the groups (h2opt.selection.cross_validate) and each ridge, PCH is fitted
+        on the other folds and scored by the mean heritability of its traits on the held-out fold.
+        Returns (ridge with the best mean score, scores (len(ridges),), fold_scores).
+        """
+        def score_fold(X_fit, groups_fit, environment_fit, X_val, groups_val, environment_val):
+            return [mean_heritability(
+                cls(n_traits, ridge).fit(X_fit, groups_fit, environment_fit).transform(X_val),
+                groups_val, environment_val) for ridge in ridges]
+
+        scores, fold_scores = cross_validate(X, groups, environment, score_fold, n_folds, seed)
+        return ridges[int(np.argmax(scores))], scores, fold_scores
+
     def _directions(self, Z, groups, environment, n_features):
         _, inverse, counts = np.unique(groups, return_inverse=True, return_counts=True)
         keep = counts[inverse] >= 2
         Zc = Z[keep] - Z[keep].mean(axis=0)
         Ze = Zc
-        if environment is not None:
-            for a in range(environment.shape[1]):
-                Ze = _group_center(Ze, environment[keep, a])
+        for a in range(environment.shape[1]):
+            Ze = _group_center(Ze, environment[keep, a])
         R = _group_center(Ze, groups[keep])
         _, inverse_kept, counts_kept = np.unique(groups[keep], return_inverse=True,
                                                  return_counts=True)

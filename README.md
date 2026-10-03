@@ -87,13 +87,18 @@ Options: `n_iter` steps per trait (default 10000), `learning_rate` for RMSprop (
 ### Linear H2-opt with L-BFGS
 
 For linear traits, `LinearH2opt` trains to convergence with L-BFGS (in float64), with a ridge penalty on the weights.
-`ridge` and the number of steps `n_iter` are best tuned on validation individuals, e.g. with `validation=(X_val, groups_val, environment_val)`, which records the validation heritability after every step in `validation_curves_`.
+The penalty equals the effect of adding independent noise with standard deviation `sqrt(ridge * v)` to the measurements (v: their mean variance), the data augmentation of `train`; the fitted model reports it as `noise_sd_`.
+`LinearH2opt.tune` chooses one ridge for all traits by cross-validation over groups: the mean heritability of the traits on held-out groups, at convergence, averaged over the folds.
 
 ```python
+import numpy as np
 from h2opt import LinearH2opt
 
 is_train = train_test == 0
-model = LinearH2opt(n_traits=5, ridge=1e-4, n_iter=100).fit(X[is_train], groups[is_train], environment[is_train])
+ridges = list(np.logspace(-4, 2, 13))
+ridge, scores, fold_scores = LinearH2opt.tune(X[is_train], groups[is_train], environment[is_train],
+                                              ridges, n_traits=5, n_folds=5)
+model = LinearH2opt(n_traits=5, ridge=ridge).fit(X[is_train], groups[is_train], environment[is_train])
 traits = model.transform(X)
 ```
 

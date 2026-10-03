@@ -17,3 +17,21 @@ def test_linear_h2opt_matches_pch_without_ridge(sorghum):
     assert herit[0] == pytest.approx(herit_pch[0], abs=1e-3)
     assert abs(np.corrcoef(Y[:, 0], Y[:, 1])[0, 1]) < 1e-6
     assert model.validation_curves_.shape == (2, 30)
+    assert model.noise_sd_ == pytest.approx(np.sqrt(1e-8 * X.var(axis=0).mean()), rel=1e-6)
+
+
+def test_tune_picks_the_ridge_with_best_cross_validated_heritability(sorghum):
+    X, groups, environment = sorghum
+    X = X[:, ::20]
+    ridges = (1e-4, 1e-2, 1.0)
+    ridge, scores, fold_scores = h2opt.LinearH2opt.tune(X, groups, environment, n_traits=2,
+                                                        ridges=ridges, n_folds=3, n_iter=5)
+    assert fold_scores.shape == (3, 3)
+    np.testing.assert_allclose(scores, fold_scores.mean(axis=0))
+    assert ridge == ridges[int(np.argmax(scores))]
+    # the score of a fold: fit on the other folds, mean heritability on the held-out fold
+    fold = h2opt.selection.group_folds(groups, 3)
+    fit, val = fold != 0, fold == 0
+    model = h2opt.LinearH2opt(2, ridge=ridges[0], n_iter=5)
+    model.fit(X[fit], groups[fit], environment[fit], (X[val], groups[val], environment[val]))
+    assert fold_scores[0, 0] == pytest.approx(model.validation_curves_[:, -1].mean())

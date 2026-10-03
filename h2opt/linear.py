@@ -4,6 +4,7 @@ import numpy as np
 import torch
 
 from .heritability import AnovaDesign
+from .selection import RIDGES, cross_validate, mean_heritability
 
 
 def _residualize(y, previous, rows=None):
@@ -64,35 +65,39 @@ class LinearH2opt:
     uncorrelated with traits 1..k-1 on the training individuals (least-squares residual).
     Optimization runs in float64 with L-BFGS (strong Wolfe line search), over w = P u with P =
     (Cov(X) + ridge * v * I)^(-1/2): the same model and objective, better conditioned. Unlike train,
-    this converges, so n_iter (L-BFGS steps of up to 20 evaluations) acts as a stopping point to
-    tune, together with ridge, on validation individuals (see tune).
+    this converges; n_iter (L-BFGS steps of up to 20 evaluations) only has to be large enough.
+
+    The penalty equals the expected effect of independent input noise with standard deviation
+    sigma = sqrt(ridge * v) on the objective (the noise adds sigma^2 |w|^2 to the total variance
+    and nothing to the genetic variance), the data augmentation of train. Tune ridge on validation
+    individuals (see tune).
 
     fit(X, groups, environment, validation=None): validation is an optional (X, groups, environment)
     tuple; the heritability of each trait on it after every step is stored in validation_curves_
-    (n_traits, n_iter). transform(X) returns the (n, n_traits) traits.
+    (n_traits, n_iter). feature_variance_ is v, so noise_sd_ = sqrt(ridge * v). transform(X)
+    returns the (n, n_traits) traits.
     """
 
-    def __init__(self, n_traits=1, ridge=1e-4, n_iter=100, seed=0):
+    def __init__(self, n_traits=1, ridge=1e-4, n_iter=200, seed=0):
         self.n_traits = n_traits
         self.ridge = ridge
         self.n_iter = n_iter
         self.seed = seed
 
-    def fit(self, X, groups, environment=None, validation=None, _spectrum=None,
-            _validation_XV=None):
+    def fit(self, X, groups, environment=None, validation=None, _spectrum=None):
         X = _as_float64(X)
         n, m = X.shape
         spectrum = _spectrum if _spectrum is not None else _Spectrum(X)
         design = AnovaDesign(groups, environment)
         if validation is not None:
-            if _validation_XV is None:
-                _validation_XV = _as_float64(validation[0]) @ spectrum.V
-            val_XV = _validation_XV
+            val_XV = _as_float64(validation[0]) @ spectrum.V
             val_design = AnovaDesign(validation[1], validation[2])
             val_traits = torch.zeros((val_XV.shape[0], 0), dtype=torch.float64)
 
         d = spectrum.scale(self.ridge)
         penalty_scale = self.ridge * spectrum.feature_variance
+        self.feature_variance_ = float(spectrum.feature_variance)
+        self.noise_sd_ = float(penalty_scale) ** 0.5
         self.weights_, self.means_, self.coefs_ = [], [], []
         self.validation_curves_ = np.zeros((self.n_traits, self.n_iter))
         traits = torch.zeros((n, 0), dtype=torch.float64)
@@ -147,19 +152,24 @@ class LinearH2opt:
         return self.fit(X, groups, environment, validation).transform(X)
 
     @classmethod
-    def tune(cls, X, groups, environment, validation, ridges, n_iter=100, seed=0):
-        """Choose ridge and number of steps by the validation heritability of the first trait.
+    def tune(cls, X, groups, environment, n_traits=1, ridges=RIDGES, n_folds=5, n_iter=200,
+             seed=0):
+        """Choose one ridge for all traits by cross-validated heritability at convergence.
 
-        Fits one trait per ridge, sharing one eigendecomposition. Returns (ridge, steps, curves),
-        where curves is the (len(ridges), n_iter) validation heritability after every step.
+        For each fold of the groups (h2opt.selection.cross_validate) and each ridge, n_traits
+        traits are fitted for n_iter steps on the other folds and scored by their mean
+        heritability on the held-out fold. Returns (ridge with the best mean score, scores
+        (len(ridges),), fold_scores (n_folds, len(ridges))).
         """
-        X = _as_float64(X)
-        spectrum = _Spectrum(X)
-        val_XV = _as_float64(validation[0]) @ spectrum.V
-        curves = np.zeros((len(ridges), n_iter))
-        for i, ridge in enumerate(ridges):
-            model = cls(1, ridge=ridge, n_iter=n_iter, seed=seed)
-            model.fit(X, groups, environment, validation, _spectrum=spectrum, _validation_XV=val_XV)
-            curves[i] = model.validation_curves_[0]
-        best, step = np.unravel_index(np.argmax(curves), curves.shape)
-        return ridges[best], int(step) + 1, curves
+        def score_fold(X_fit, groups_fit, environment_fit, X_val, groups_val, environment_val):
+            spectrum = _Spectrum(_as_float64(X_fit))
+            scores = []
+            for ridge in ridges:
+                model = cls(n_traits, ridge=ridge, n_iter=n_iter, seed=seed)
+                model.fit(X_fit, groups_fit, environment_fit, _spectrum=spectrum)
+                scores.append(mean_heritability(model.transform(X_val), groups_val,
+                                                environment_val))
+            return scores
+
+        scores, fold_scores = cross_validate(X, groups, environment, score_fold, n_folds, seed)
+        return ridges[int(np.argmax(scores))], scores, fold_scores
