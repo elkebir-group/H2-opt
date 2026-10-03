@@ -53,22 +53,24 @@ def project_out(Y, background):
     return Y / (torch.mean(Y ** 2, axis=0).reshape((1, -1)) ** 0.5)
 
 
-def _synthetic_traits(Y, background):
-    return decorrelate(project_out(Y, background), clip=2)
+def _synthetic_traits(Y, background, clip):
+    return decorrelate(project_out(Y, background), clip=clip)
 
 
 def train(model, X, groups, environment, train_test, model_file=None, n_traits=1, first_trait=0,
-          n_iter=10000, learning_rate=1e-4, noise_level=0.1, penalty=None, device='cpu',
-          verbose=True, print_every=100, save_every=1000):
+          n_iter=10000, learning_rate=1e-4, noise_level=0.1, noise='uniform', clip=2.0,
+          penalty=None, device='cpu', verbose=True, print_every=100, save_every=1000):
     """Train synthetic traits one at a time to maximize their ANOVA heritability on training data.
 
     model: a TraitModels with at least n_traits traits; X: (n, m) measurements.
     groups, environment: as in anova_heritability. train_test: length-n array, 0 = train, 1 = test.
     Trait t is trained after traits first_trait..t-1 and is made orthogonal to all earlier traits.
-    Each step adds uniform noise in [0, noise_level) to the training measurements and maximizes the
-    mean heritability with RMSprop. penalty(trait_model, Y) is an optional regularization term
-    added to the loss, given the model of the current trait and its raw (n_train, 1) output on the
-    noisy training data.
+    Each step adds noise to the training measurements and maximizes the mean heritability with
+    RMSprop. noise is 'uniform' (in [0, noise_level), the paper's sorghum setting) or 'normal'
+    (standard deviation noise_level, the paper's simulation setting). The standardized traits are
+    clipped to [-clip, clip] in the loss (clip=None: no clipping; the simulation used none).
+    penalty(trait_model, Y) is an optional regularization term added to the loss, given the model
+    of the current trait and its raw (n_train, 1) output on the noisy training data.
     If model_file is given, the whole model is saved every save_every steps and after each trait.
     """
     X = torch.tensor(X).float().to(device)
@@ -81,6 +83,15 @@ def train(model, X, groups, environment, train_test, model_file=None, n_traits=1
     def design(rows):
         env = environment[rows] if environment is not None else None
         return AnovaDesign(groups[rows], env, device)
+
+    if noise == 'uniform':
+        def draw_noise(shape):
+            return torch.rand(size=shape, device=device)
+    elif noise == 'normal':
+        def draw_noise(shape):
+            return torch.randn(size=shape, device=device)
+    else:
+        raise ValueError(f"noise must be 'uniform' or 'normal', not {noise!r}")
 
     train_design = design(is_train)
     test_design = design(is_test) if np.any(is_test) else None
@@ -96,18 +107,17 @@ def train(model, X, groups, environment, train_test, model_file=None, n_traits=1
         optimizer = torch.optim.RMSprop(model.parameters(), lr=learning_rate)
 
         for step in range(n_iter):
-            noise = torch.rand(size=X_train_clean.shape, device=device) * noise_level
-            X_train = X_train_clean + noise
+            X_train = X_train_clean + draw_noise(X_train_clean.shape) * noise_level
 
             Y_raw = model(X_train, np.array([trait]))
-            Y = _synthetic_traits(Y_raw, background_train)
+            Y = _synthetic_traits(Y_raw, background_train, clip)
             loss = -1 * torch.mean(train_design.heritability(Y))
             if penalty is not None:
                 loss = loss + penalty(model.models[trait], Y_raw)
 
             if verbose and step % print_every == 0:
                 with torch.no_grad():
-                    Y = _synthetic_traits(model(X, np.array([trait])), background)
+                    Y = _synthetic_traits(model(X, np.array([trait])), background, clip)
                     train_h = train_design.heritability(Y[is_train]).cpu().numpy()
                     message = f'trait {trait} step {step}: train heritability {train_h}'
                     if test_design is not None:

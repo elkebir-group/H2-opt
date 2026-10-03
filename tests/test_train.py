@@ -27,6 +27,21 @@ def test_train_increases_heritability(sorghum):
     assert heritability() > before
 
 
+def test_train_with_normal_noise_and_no_clip(sorghum):
+    X, groups, environment = sorghum
+    X = X[:, ::20]
+    torch.manual_seed(0)
+    model = h2opt.TraitModels(2, h2opt.LinearModel, X.shape[1])
+    h2opt.train(model, X, groups, environment, np.zeros(len(groups), dtype=int), n_traits=2,
+                n_iter=20, learning_rate=1e-3, noise_level=0.02, noise='normal', clip=None,
+                verbose=False)
+    traits = model(torch.tensor(X).float()).detach()
+    assert torch.isfinite(traits).all()
+    with pytest.raises(ValueError):
+        h2opt.train(model, X, groups, environment, np.zeros(len(groups), dtype=int),
+                    n_iter=1, noise='gaussian', verbose=False)
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason='needs CUDA')
 def test_train_on_cuda(sorghum):
     X, groups, environment = sorghum
