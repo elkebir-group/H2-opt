@@ -75,6 +75,25 @@ traits = model(torch.tensor(X).float())  # n by n_traits synthetic traits (befor
 Options: `n_iter` steps per trait (default 10000), `learning_rate` for RMSprop (default 1e-4), `noise_level` for data augmentation, the maximum of the uniform noise added to the measurements at each step (default 0.1), and `model_file` to save the model every `save_every` steps.
 `ConvModel` is a convolutional alternative to `LinearModel` for spectra.
 
+## Baselines
+
+`h2opt.baselines` has linear baselines with a common interface: `fit(X, groups, environment)` on the training individuals, then `transform(X)`.
+Their traits are centered and made uncorrelated on the training individuals, like H2-opt's.
+
+- `PCA(n_traits)`: principal components of the measurements.
+- `GeneticPCA(n_traits)`: principal components of the ANOVA estimate of the genetic covariance.
+- `LDA(n_traits)`: linear discriminant analysis of the groups (unregularized).
+- `PCH(n_traits, ridge)`: principal components of heritability, maximizing the ANOVA heritability above with ridge regularization.
+- `MaxHeritabilityFeatures(n_traits)`: the most heritable individual measurements (e.g. wavelengths), selected greedily.
+
+```python
+from h2opt.baselines import PCH
+
+is_train = train_test == 0
+pch = PCH(n_traits=5, ridge=1e-4).fit(X[is_train], groups[is_train], environment[is_train])
+traits = pch.transform(X)
+```
+
 ## Generating simulated hyperspectral measurements
 
 `encode_latent` embeds latent traits into simulated spectra with a pretrained autoencoder.
