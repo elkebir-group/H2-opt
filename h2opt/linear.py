@@ -6,25 +6,52 @@ import torch
 from .heritability import AnovaDesign
 
 
-def _residualize(y, previous, rows):
-    """Least-squares residual of y on the earlier traits, coefficients from the given rows.
+def _residualize(y, previous, rows=None):
+    """Least-squares residual of y on the earlier traits, coefficients from the given rows (default all).
 
     Returns the residual, the mean of the earlier traits on the rows and the coefficients.
     """
     if previous.shape[1] == 0:
         return y, None, None
-    mean = previous[rows].mean(0)
-    centered = previous - mean
-    coef = torch.linalg.lstsq(centered[rows], y[rows] - y[rows].mean())[0]
+    if rows is None:
+        mean = previous.mean(0)
+        centered = previous - mean
+        coef = torch.linalg.lstsq(centered, y - y.mean())[0]
+    else:
+        mean = previous[rows].mean(0)
+        centered = previous - mean
+        coef = torch.linalg.lstsq(centered[rows], y[rows] - y[rows].mean())[0]
     return y - centered @ coef, mean, coef
 
 
-def _apply(X, w, mean, coef, previous):
-    """Trait X w residualized on the earlier traits with coefficients fitted on the training individuals."""
-    y = (X @ w)[:, None]
-    if mean is not None:
-        y = y - (previous - mean) @ coef
-    return y
+def _apply(y, mean, coef, previous):
+    """Residualize the trait values y on the earlier traits with coefficients fitted on the training individuals."""
+    if mean is None:
+        return y
+    return y - (previous - mean) @ coef
+
+
+class _Spectrum:
+    """Eigendecomposition of the covariance of the training measurements, shared by fits with different ridges.
+
+    X V (the measurements in the eigenbasis) is precomputed so that a trait X w with w = V z costs one n x m product.
+    """
+
+    def __init__(self, X):
+        n = X.shape[0]
+        Xc = X - X.mean(0)
+        lam, self.V = torch.linalg.eigh(Xc.T @ Xc / n)
+        self.lam = lam.clamp(min=0)
+        self.feature_variance = lam.sum() / len(lam)
+        self.XV = X @ self.V
+
+    def scale(self, ridge):
+        """Diagonal of the preconditioner (Cov(X) + ridge * v * I)^(-1/2) in the eigenbasis."""
+        return 1 / torch.sqrt(self.lam + max(ridge, 1e-12) * self.feature_variance)
+
+
+def _as_float64(X):
+    return torch.as_tensor(np.asarray(X), dtype=torch.float64)
 
 
 class LinearH2opt:
@@ -36,7 +63,7 @@ class LinearH2opt:
     training individuals (least-squares residual). Optimization runs in float64 with L-BFGS (strong Wolfe line
     search), over w = P u with P = (Cov(X) + ridge * v * I)^(-1/2): the same model and objective, better
     conditioned. Unlike train, this converges, so n_iter (L-BFGS steps of up to 20 evaluations) acts as a
-    stopping point to tune, together with ridge, on validation individuals.
+    stopping point to tune, together with ridge, on validation individuals (see tune).
 
     fit(X, groups, environment, validation=None): validation is an optional (X, groups, environment) tuple;
     the heritability of each trait on it after every step is stored in validation_curves_ (n_traits, n_iter).
@@ -49,64 +76,80 @@ class LinearH2opt:
         self.n_iter = n_iter
         self.seed = seed
 
-    def fit(self, X, groups, environment=None, validation=None):
-        X = torch.tensor(np.asarray(X), dtype=torch.float64)
+    def fit(self, X, groups, environment=None, validation=None, _spectrum=None, _validation_XV=None):
+        X = _as_float64(X)
         n, m = X.shape
-        rows = np.arange(n)
+        spectrum = _spectrum if _spectrum is not None else _Spectrum(X)
         design = AnovaDesign(groups, environment)
         if validation is not None:
-            X_val = torch.tensor(np.asarray(validation[0]), dtype=torch.float64)
+            val_XV = _validation_XV if _validation_XV is not None else _as_float64(validation[0]) @ spectrum.V
             val_design = AnovaDesign(validation[1], validation[2])
+            val_traits = torch.zeros((val_XV.shape[0], 0), dtype=torch.float64)
 
-        Xc = X - X.mean(0)
-        lam, V = torch.linalg.eigh(Xc.T @ Xc / n)
-        self.feature_variance_ = lam.sum() / len(lam)
-        P = V @ torch.diag(1 / torch.sqrt(lam.clamp(min=0) + max(self.ridge, 1e-12) * self.feature_variance_)) @ V.T
-
+        d = spectrum.scale(self.ridge)
+        penalty_scale = self.ridge * spectrum.feature_variance
         self.weights_, self.means_, self.coefs_ = [], [], []
         self.validation_curves_ = np.zeros((self.n_traits, self.n_iter))
         traits = torch.zeros((n, 0), dtype=torch.float64)
         for k in range(self.n_traits):
+            # w = P u with u ~ N(0, I); in the eigenbasis w = V (d * z) with z = V' u
             torch.manual_seed(self.seed + k)
-            u = torch.randn(m, dtype=torch.float64).requires_grad_(True)
-            optimizer = torch.optim.LBFGS([u], lr=1, max_iter=20, history_size=100, tolerance_grad=0,
+            z = (spectrum.V.T @ torch.randn(m, dtype=torch.float64)).requires_grad_(True)
+            optimizer = torch.optim.LBFGS([z], lr=1, max_iter=20, history_size=100, tolerance_grad=0,
                                           tolerance_change=0, line_search_fn='strong_wolfe')
 
             def closure():
                 optimizer.zero_grad()
-                w = P @ u
-                y, _, _ = _residualize((X @ w)[:, None], traits, rows)
+                dz = d * z
+                y, _, _ = _residualize((spectrum.XV @ dz)[:, None], traits)
                 genetic, total = design.heritability(y, return_variance=True)
-                loss = -(genetic / (total + self.ridge * self.feature_variance_ * (w @ w))).sum()
+                loss = -(genetic / (total + penalty_scale * (dz @ dz))).sum()
                 loss.backward()
                 return loss
 
-            if validation is not None:
-                previous_val = torch.tensor(self.transform(X_val))
             for step in range(self.n_iter):
                 optimizer.step(closure)
                 if validation is not None:
                     with torch.no_grad():
-                        w = P @ u
-                        _, mean, coef = _residualize((X @ w)[:, None], traits, rows)
-                        y = _apply(X_val, w, mean, coef, previous_val)
+                        dz = d * z
+                        _, mean, coef = _residualize((spectrum.XV @ dz)[:, None], traits)
+                        y = _apply((val_XV @ dz)[:, None], mean, coef, val_traits)
                         self.validation_curves_[k, step] = val_design.heritability(y).item()
 
             with torch.no_grad():
-                w = (P @ u).detach()
-                y, mean, coef = _residualize((X @ w)[:, None], traits, rows)
-                self.weights_.append(w)
+                dz = d * z
+                y, mean, coef = _residualize((spectrum.XV @ dz)[:, None], traits)
+                self.weights_.append(spectrum.V @ dz)
                 self.means_.append(mean)
                 self.coefs_.append(coef)
                 traits = torch.cat([traits, y], 1)
+                if validation is not None:
+                    val_traits = torch.cat([val_traits, _apply((val_XV @ dz)[:, None], mean, coef, val_traits)], 1)
         return self
 
-    def transform(self, X, n_traits=None):
-        X = torch.tensor(np.asarray(X), dtype=torch.float64)
+    def transform(self, X):
+        X = _as_float64(X)
         traits = torch.zeros((X.shape[0], 0), dtype=torch.float64)
-        for w, mean, coef in list(zip(self.weights_, self.means_, self.coefs_))[:n_traits]:
-            traits = torch.cat([traits, _apply(X, w, mean, coef, traits)], 1)
+        for w, mean, coef in zip(self.weights_, self.means_, self.coefs_):
+            traits = torch.cat([traits, _apply((X @ w)[:, None], mean, coef, traits)], 1)
         return traits.numpy()
 
     def fit_transform(self, X, groups, environment=None, validation=None):
         return self.fit(X, groups, environment, validation).transform(X)
+
+    @classmethod
+    def tune(cls, X, groups, environment, validation, ridges, n_iter=100, seed=0):
+        """Choose ridge and number of steps by the validation heritability of the first trait.
+
+        Fits one trait per ridge, sharing one eigendecomposition. Returns (ridge, steps, curves), where
+        curves is the (len(ridges), n_iter) validation heritability after every step.
+        """
+        X = _as_float64(X)
+        spectrum = _Spectrum(X)
+        val_XV = _as_float64(validation[0]) @ spectrum.V
+        curves = np.zeros((len(ridges), n_iter))
+        for i, ridge in enumerate(ridges):
+            model = cls(1, ridge=ridge, n_iter=n_iter, seed=seed)
+            curves[i] = model.fit(X, groups, environment, validation, _spectrum=spectrum, _validation_XV=val_XV).validation_curves_[0]
+        best, step = np.unravel_index(np.argmax(curves), curves.shape)
+        return ridges[best], int(step) + 1, curves

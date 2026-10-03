@@ -18,8 +18,15 @@ class _Grouping:
         self.order = torch.tensor(order, device=device)
         self.start = torch.tensor(start, device=device)
         self.end_plus_one = torch.tensor(end + 1, device=device)
-        self.sizes = torch.tensor(sizes, device=device).float()
+        self._sizes = {}
+        self._sizes_int = torch.tensor(sizes, device=device)
         self.group_of_row = torch.tensor(np.cumsum(group_of_row), device=device)
+
+    def sizes(self, dtype):
+        """Group sizes as a tensor of the given dtype (cached)."""
+        if dtype not in self._sizes:
+            self._sizes[dtype] = self._sizes_int.to(dtype)
+        return self._sizes[dtype]
 
 
 def _as_environment(environment, n):
@@ -46,7 +53,7 @@ def _grouped_variance(Y, grouping):
 
     sums = Y_cumsum[grouping.end_plus_one] - Y_cumsum[grouping.start]
     sums_sq = Y_sq_cumsum[grouping.end_plus_one] - Y_sq_cumsum[grouping.start]
-    sizes = grouping.sizes
+    sizes = grouping.sizes(Y.dtype)
 
     within = sums_sq - ((sums ** 2) / sizes.reshape((-1, 1)))
     within = within * (sizes / (sizes - 1)).reshape((-1, 1))
@@ -56,10 +63,10 @@ def _grouped_variance(Y, grouping):
 def _remove_environment(Y, groupings):
     Y = Y.clone()
     for grouping in groupings:
-        Y_sorted = torch.cat((torch.zeros((1, Y.shape[1])).to(Y.device), Y[grouping.order]))
+        Y_sorted = torch.cat((torch.zeros((1, Y.shape[1]), dtype=Y.dtype, device=Y.device), Y[grouping.order]))
         Y_cumsum = torch.cumsum(Y_sorted, dim=0)
         sums = Y_cumsum[grouping.end_plus_one] - Y_cumsum[grouping.start]
-        means = sums / grouping.sizes.reshape((-1, 1))
+        means = sums / grouping.sizes(Y.dtype).reshape((-1, 1))
         Y[grouping.order] = Y[grouping.order] - means[grouping.group_of_row]
     return Y
 
