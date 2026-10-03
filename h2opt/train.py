@@ -53,21 +53,20 @@ def project_out(Y, background):
     return Y / (torch.mean(Y ** 2, axis=0).reshape((1, -1)) ** 0.5)
 
 
-def _synthetic_traits(model, X, trait, background):
-    Y = model(X, np.array([trait]))
-    Y = project_out(Y, background)
-    return decorrelate(Y, clip=2)
+def _synthetic_traits(Y, background):
+    return decorrelate(project_out(Y, background), clip=2)
 
 
 def train(model, X, groups, environment, train_test, model_file=None, n_traits=1, first_trait=0, n_iter=10000,
-          learning_rate=1e-4, noise_level=0.1, verbose=True, print_every=100, save_every=10):
+          learning_rate=1e-4, noise_level=0.1, penalty=None, verbose=True, print_every=100, save_every=10):
     """Train synthetic traits one at a time to maximize their ANOVA heritability on the training set.
 
     model: a TraitModels with at least n_traits traits; X: (n, m) measurements.
     groups, environment: as in anova_heritability. train_test: length-n array, 0 = train, 1 = test.
     Trait t is trained after traits first_trait..t-1 and is made orthogonal to all earlier traits.
     Each step adds uniform noise in [0, noise_level) to the training measurements and maximizes the
-    mean heritability with RMSprop. If model_file is given, the whole model is saved every save_every steps.
+    mean heritability with RMSprop. penalty(trait_model, Y) is an optional regularization term added to the loss,
+    given the model of the current trait and its raw (n_train, 1) output on the noisy training data. If model_file is given, the whole model is saved every save_every steps.
     Returns the model.
     """
     X = torch.tensor(X).float()
@@ -92,12 +91,15 @@ def train(model, X, groups, environment, train_test, model_file=None, n_traits=1
             X_train = X[is_train]
             X_train = X_train + torch.rand(size=X_train.shape) * noise_level
 
-            Y = _synthetic_traits(model, X_train, trait, background[is_train])
+            Y_raw = model(X_train, np.array([trait]))
+            Y = _synthetic_traits(Y_raw, background[is_train])
             loss = -1 * torch.mean(anova_heritability(Y, *subset(is_train)))
+            if penalty is not None:
+                loss = loss + penalty(model.models[trait], Y_raw)
 
             if verbose and step % print_every == 0:
                 with torch.no_grad():
-                    Y = _synthetic_traits(model, X, trait, background)
+                    Y = _synthetic_traits(model(X, np.array([trait])), background)
                     message = f'trait {trait} step {step}: train heritability {anova_heritability(Y[is_train], *subset(is_train)).numpy()}'
                     if has_test:
                         is_test = train_test == 1
