@@ -88,6 +88,7 @@ Options: `n_iter` steps per trait (default 10000), `learning_rate` for RMSprop (
 ### Linear H2-opt with L-BFGS
 
 For linear traits, `LinearH2opt` trains to convergence with L-BFGS (in float64), with a ridge penalty on the weights.
+Each trait stops when an L-BFGS step leaves its loss unchanged (usually after 3-7 steps), or after `n_iter` steps (default 200); `n_steps_` reports the steps of each trait. `device` (e.g. `"cuda"`) runs the fit on a GPU; the traits are the same up to scale, which the objective does not fix.
 The penalty equals the effect of adding independent noise with standard deviation `sqrt(ridge * v)` to the measurements (v: their mean variance), the data augmentation of `train`; the fitted model reports it as `noise_sd_`.
 `LinearH2opt.tune` chooses one ridge for all traits by cross-validation over groups: the mean heritability of the traits on held-out groups, at convergence, averaged over the folds.
 

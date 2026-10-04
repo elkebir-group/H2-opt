@@ -28,8 +28,8 @@ class _Spectrum:
         return 1 / torch.sqrt(self.lam + max(ridge, 1e-12) * self.feature_variance)
 
 
-def _as_float64(X):
-    return torch.as_tensor(np.asarray(X), dtype=torch.float64)
+def _as_float64(X, device='cpu'):
+    return torch.as_tensor(np.asarray(X), dtype=torch.float64, device=device)
 
 
 class LinearH2opt:
@@ -43,7 +43,8 @@ class LinearH2opt:
     Decorrelation.
     Optimization runs in float64 with L-BFGS (strong Wolfe line search), over w = P u with P =
     (Cov(X) + ridge * v * I)^(-1/2): the same model and objective, better conditioned. Unlike train,
-    this converges; n_iter (L-BFGS steps of up to 20 evaluations) only has to be large enough.
+    this converges: a trait stops when one L-BFGS step (up to 20 evaluations) leaves its loss
+    unchanged, or after n_iter steps.
 
     The penalty equals the expected effect of independent input noise with standard deviation
     sigma = sqrt(ridge * v) on the objective (the noise adds sigma^2 |w|^2 to the total variance
@@ -52,37 +53,44 @@ class LinearH2opt:
 
     fit(X, groups, environment, validation=None): validation is an optional (X, groups, environment)
     tuple; the heritability of each trait on it after every step is stored in validation_curves_
-    (n_traits, n_iter). feature_variance_ is v, so noise_sd_ = sqrt(ridge * v). weights_ is the
-    (m, n_traits) matrix of the w's. transform(X) returns the (n, n_traits) traits.
+    (n_traits, n_iter); after a trait stops, its curve stays at the last value. n_steps_ is the
+    number of L-BFGS steps of each trait. feature_variance_ is v, so noise_sd_ = sqrt(ridge * v).
+    weights_ is the (m, n_traits) matrix of the w's. transform(X) returns the (n, n_traits) traits.
+    device is the torch device of the optimization; the result does not depend on it beyond
+    rounding.
     """
 
-    def __init__(self, n_traits=1, ridge=1e-4, n_iter=200, seed=0):
+    def __init__(self, n_traits=1, ridge=1e-4, n_iter=200, seed=0, device='cpu'):
         self.n_traits = n_traits
         self.ridge = ridge
         self.n_iter = n_iter
         self.seed = seed
+        self.device = device
 
     def fit(self, X, groups, environment=None, validation=None, _spectrum=None):
-        X = _as_float64(X)
+        X = _as_float64(X, self.device)
         m = X.shape[1]
         spectrum = _spectrum if _spectrum is not None else _Spectrum(X)
-        design = AnovaDesign(groups, environment)
+        design = AnovaDesign(groups, environment, self.device)
         if validation is not None:
-            val_XV = _as_float64(validation[0]) @ spectrum.V
-            val_design = AnovaDesign(validation[1], validation[2])
+            val_XV = _as_float64(validation[0], self.device) @ spectrum.V
+            val_design = AnovaDesign(validation[1], validation[2], self.device)
 
         d = spectrum.scale(self.ridge)
         penalty_scale = self.ridge * spectrum.feature_variance
         self.feature_variance_ = float(spectrum.feature_variance)
         self.noise_sd_ = float(penalty_scale) ** 0.5
         self.validation_curves_ = np.zeros((self.n_traits, self.n_iter))
+        self.n_steps_ = np.zeros(self.n_traits, dtype=int)
         # d * z of the fitted traits, one per column
-        dz_fitted = torch.zeros((m, 0), dtype=torch.float64)
+        dz_fitted = torch.zeros((m, 0), dtype=torch.float64, device=self.device)
         for k in range(self.n_traits):
             basis = orthonormal_basis(spectrum.XV @ dz_fitted)
-            # w = P u with u ~ N(0, I); in the eigenbasis w = V (d * z) with z = V' u
+            # w = P u with u ~ N(0, I); in the eigenbasis w = V (d * z) with z = V' u. u is drawn
+            # on the CPU so that the start does not depend on the device.
             torch.manual_seed(self.seed + k)
-            z = (spectrum.V.T @ torch.randn(m, dtype=torch.float64)).requires_grad_(True)
+            u = torch.randn(m, dtype=torch.float64).to(self.device)
+            z = (spectrum.V.T @ u).requires_grad_(True)
             optimizer = torch.optim.LBFGS([z], lr=1, max_iter=20, history_size=100,
                                           tolerance_grad=0, tolerance_change=0,
                                           line_search_fn='strong_wolfe')
@@ -98,18 +106,24 @@ class LinearH2opt:
                 loss.backward()
                 return loss
 
+            previous = None
             for step in range(self.n_iter):
-                optimizer.step(closure)
+                loss = optimizer.step(closure).item()  # the loss before this step
                 if validation is not None:
                     with torch.no_grad():
                         dz = torch.cat([dz_fitted, (d * z)[:, None]], 1)
-                        traits = Decorrelation().fit(spectrum.XV @ dz).transform(val_XV @ dz)
-                        self.validation_curves_[k, step] = val_design.heritability(
-                            torch.tensor(traits[:, -1:])).item()
+                        traits = Decorrelation().fit((spectrum.XV @ dz).cpu()).transform(
+                            (val_XV @ dz).cpu())
+                        self.validation_curves_[k, step:] = val_design.heritability(
+                            torch.tensor(traits[:, -1:], device=self.device)).item()
+                self.n_steps_[k] = step + 1
+                if loss == previous:
+                    break
+                previous = loss
 
             dz_fitted = torch.cat([dz_fitted, (d * z).detach()[:, None]], 1)
-        self.weights_ = (spectrum.V @ dz_fitted).numpy()
-        self.decorrelation_ = Decorrelation().fit(spectrum.XV @ dz_fitted)
+        self.weights_ = (spectrum.V @ dz_fitted).cpu().numpy()
+        self.decorrelation_ = Decorrelation().fit((spectrum.XV @ dz_fitted).cpu())
         return self
 
     def transform(self, X):
@@ -120,19 +134,19 @@ class LinearH2opt:
 
     @classmethod
     def tune(cls, X, groups, environment, n_traits=1, ridges=RIDGES, n_folds=5, n_iter=200,
-             seed=0):
+             seed=0, device='cpu'):
         """Choose one ridge for all traits by cross-validated heritability at convergence.
 
         For each fold of the groups (h2opt.selection.cross_validate) and each ridge, n_traits
-        traits are fitted for n_iter steps on the other folds and scored by their mean
+        traits are fitted to convergence on the other folds and scored by their mean
         heritability on the held-out fold. Returns (ridge with the best mean score, scores
         (len(ridges),), fold_scores (n_folds, len(ridges))).
         """
         def score_fold(X_fit, groups_fit, environment_fit, X_val, groups_val, environment_val):
-            spectrum = _Spectrum(_as_float64(X_fit))
+            spectrum = _Spectrum(_as_float64(X_fit, device))
             scores = []
             for ridge in ridges:
-                model = cls(n_traits, ridge=ridge, n_iter=n_iter, seed=seed)
+                model = cls(n_traits, ridge=ridge, n_iter=n_iter, seed=seed, device=device)
                 model.fit(X_fit, groups_fit, environment_fit, _spectrum=spectrum)
                 scores.append(anova_heritability(model.transform(X_val), groups_val,
                                                  environment_val).mean())

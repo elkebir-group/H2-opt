@@ -35,3 +35,25 @@ def test_tune_picks_the_ridge_with_best_cross_validated_heritability(sorghum):
     model = h2opt.LinearH2opt(2, ridge=ridges[0], n_iter=5)
     model.fit(X[fit], groups[fit], environment[fit], (X[val], groups[val], environment[val]))
     assert fold_scores[0, 0] == pytest.approx(model.validation_curves_[:, -1].mean())
+
+
+def test_fit_stops_when_the_loss_no_longer_changes(sorghum):
+    X, groups, environment = sorghum
+    X = X[:, ::20]
+    model = h2opt.LinearH2opt(3, ridge=1e-2, n_iter=200).fit(X, groups, environment)
+    assert np.all(model.n_steps_ < 200)
+    # more steps would not change the traits
+    capped = h2opt.LinearH2opt(3, ridge=1e-2, n_iter=int(model.n_steps_.max())).fit(
+        X, groups, environment)
+    np.testing.assert_array_equal(capped.weights_, model.weights_)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason='needs CUDA')
+def test_cuda_gives_the_cpu_traits(sorghum):
+    X, groups, environment = sorghum
+    X = X[:, ::20]
+    Y = {device: h2opt.LinearH2opt(2, ridge=1e-2, device=device).fit_transform(
+        X, groups, environment) for device in ('cpu', 'cuda')}
+    # the objective does not depend on the scale of a trait, so compare standardized traits
+    np.testing.assert_allclose(Y['cuda'] / Y['cuda'].std(0), Y['cpu'] / Y['cpu'].std(0),
+                               atol=1e-5)
