@@ -90,6 +90,23 @@ Options: `n_iter` steps per trait (default 10000); `optimizer`, `'adam'` (defaul
 `'rmsprop'` is the optimizer of the paper (constant learning rate). It converges slowly when the measurements are strongly correlated: the heritability does not change with the scale of a trait, so its steps shrink relative to the weights as the weights grow.
 `ConvModel` is a convolutional alternative to `LinearModel` for spectra.
 
+### Choosing the noise level
+
+`select_noise_level` chooses the noise level from the data. For each level, it trains the first trait on part of the groups and scores its heritability on the held-out groups.
+Each level is the standard deviation of normal noise as a fraction of `noise_scale(X)`, the root mean variance of the measurements, so the same levels apply to data on any scale.
+
+```python
+from h2opt.selection import noise_scale, select_noise_level
+
+level, scores = select_noise_level(lambda: TraitModels(1, LinearModel, X.shape[1]),
+                                   X, groups, environment, n_iter=10000)
+train(model, X, groups, environment, train_test, n_traits=n_traits,
+      noise_level=level * noise_scale(X), noise='normal')
+```
+
+The groups are split into 5 folds, and folds 0 and 1 are the held-out groups of two validation splits (`n_splits`, `n_folds`).
+The levels are `NOISE_LEVELS` (0 to 0.3), and the chosen level has the highest mean held-out heritability over the splits.
+
 ## Baselines
 
 `h2opt.baselines` has linear baselines with a common interface: `fit(X, groups, environment)` on the training individuals, then `transform(X)`.

@@ -31,7 +31,7 @@ installs this checkout as an editable sibling (`../H2-opt`).
 | `models.py`, `train.py` | trait models; the training loop (Adam, or the paper's RMSprop), `synthetic_traits` |
 | `decorrelation.py` | `Decorrelation`: traits made uncorrelated on training individuals, in order |
 | `baselines.py` | PCA, genetic PCA, LDA, PCH (ridge), most heritable features |
-| `selection.py` | ridge grid, group folds, cross-validated heritability (`PCH.tune`) |
+| `selection.py` | group folds; the H2-opt noise level (`select_noise_level`) and the PCH ridge (`PCH.tune`) by held-out heritability |
 | `simulate.py` | `latent_scale`, `encode_latent`: latent traits to simulated spectra |
 | `io.py` | `load_npz` |
 
