@@ -14,7 +14,7 @@ from .train import synthetic_traits, train
 
 # Noise levels of H2-opt: the standard deviation of the normal input noise as a fraction of
 # noise_scale(X), the typical spread of a measurement.
-NOISE_LEVELS = (0.0, 0.003, 0.01, 0.03, 0.1, 0.3)
+NOISE_LEVELS = (0.0, 0.003, 0.01, 0.03, 0.1, 0.3, 1.0, 3.0)
 
 # ridge 1 is the penalty of input noise with the standard deviation of a typical measurement.
 RIDGES = tuple(float(r) for r in np.logspace(-4, 2, 13))

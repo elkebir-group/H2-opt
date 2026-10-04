@@ -105,7 +105,7 @@ train(model, X, groups, environment, train_test, n_traits=n_traits,
 ```
 
 The groups are split into 5 folds, and folds 0 and 1 are the held-out groups of two validation splits (`n_splits`, `n_folds`).
-The levels are `NOISE_LEVELS` (0 to 0.3), and the chosen level has the highest mean held-out heritability over the splits.
+The levels are `NOISE_LEVELS` (0 to 3), and the chosen level has the highest mean held-out heritability over the splits.
 
 ## Baselines
 
