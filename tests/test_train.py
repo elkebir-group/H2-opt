@@ -62,3 +62,37 @@ def test_train_on_cuda(sorghum):
     h2opt.train(model, X, groups, environment, np.zeros(len(groups), dtype=int), n_traits=2,
                 n_iter=5, device='cuda', verbose=False)
     assert next(model.parameters()).is_cuda
+
+
+def test_adam_reaches_the_pch_trait(sorghum):
+    # with normal noise of SD s and no clipping, the optimum of a linear trait is the PCH trait
+    # with ridge s^2 / v (v: the mean variance of the measurements)
+    X, groups, environment = sorghum
+    X = X[:, ::20]
+    s = 0.0014
+    pch = h2opt.baselines.PCH(1, ridge=s ** 2 / X.var(axis=0).mean()).fit(X, groups, environment)
+    torch.manual_seed(0)
+    model = h2opt.TraitModels(1, h2opt.LinearModel, X.shape[1])
+    h2opt.train(model, X, groups, environment, np.zeros(len(groups), dtype=int), n_iter=10000,
+                noise_level=s, noise='normal', clip=None, verbose=False)
+    trait = h2opt.synthetic_traits(model, X, np.ones(len(groups), dtype=bool))[:, 0]
+    assert abs(np.corrcoef(trait, pch.transform(X)[:, 0])[0, 1]) > 0.9999
+
+
+def test_rmsprop_and_unknown_optimizer(sorghum):
+    X, groups, environment = sorghum
+    X = X[:, ::20]
+    torch.manual_seed(0)
+    model = h2opt.TraitModels(1, h2opt.LinearModel, X.shape[1])
+
+    def heritability():
+        traits = model(torch.tensor(X).float()).detach()
+        return h2opt.anova_heritability(traits, groups, environment).item()
+
+    before = heritability()
+    h2opt.train(model, X, groups, environment, np.zeros(len(groups), dtype=int), n_iter=50,
+                optimizer='rmsprop', learning_rate=1e-3, noise_level=0.005, verbose=False)
+    assert heritability() > before
+    with pytest.raises(ValueError):
+        h2opt.train(model, X, groups, environment, np.zeros(len(groups), dtype=int), n_iter=1,
+                    optimizer='sgd', verbose=False)

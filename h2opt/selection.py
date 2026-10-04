@@ -1,8 +1,8 @@
 """Choosing a regularization strength by cross-validated heritability.
 
-PCH and LinearH2opt both penalize ridge * v * |w|^2 (v the mean variance of the measurements),
-so they share one grid and one rule: the ridge whose traits have the highest mean heritability on
-held-out groups, averaged over folds of the groups. Also the assignment of groups to folds.
+PCH penalizes ridge * v * |w|^2 (v the mean variance of the measurements). Its ridge is the one
+whose traits have the highest mean heritability on held-out groups, averaged over folds of the
+groups. Also the assignment of groups to folds.
 """
 
 import numpy as np

@@ -11,7 +11,6 @@ from .heritability import (
     remove_environment,
 )
 from .io import load_npz
-from .linear import LinearH2opt
 from .models import AutoEncoder, ConvModel, LinearModel, TraitModels
 from .simulate import encode_latent, latent_scale
 from .train import synthetic_traits, train
@@ -22,7 +21,6 @@ __all__ = [
     "ConvModel",
     "Decorrelation",
     "Henderson3",
-    "LinearH2opt",
     "LinearModel",
     "TraitModels",
     "anova_heritability",

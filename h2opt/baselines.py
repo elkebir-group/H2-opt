@@ -125,7 +125,7 @@ class PCH(LinearBaseline):
 
     @classmethod
     def tune(cls, X, groups, environment, n_traits, ridges=RIDGES, n_folds=5, seed=0):
-        """Choose the ridge by cross-validated heritability, as LinearH2opt.tune does.
+        """Choose the ridge by cross-validated heritability.
 
         For each fold of the groups (h2opt.selection.cross_validate) and each ridge, PCH is fitted
         on the other folds and scored by the mean heritability of its traits on the held-out fold.

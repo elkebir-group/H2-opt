@@ -76,32 +76,19 @@ train_test = np.zeros(X.shape[0], dtype=int)
 n_traits = 10
 model = TraitModels(n_traits, LinearModel, X.shape[1])
 train(model, X, groups, environment, train_test, model_file='model.pt', n_traits=n_traits,
-      n_iter=10000, learning_rate=1e-5, noise_level=0.005)
+      n_iter=10000, noise_level=0.005)
 
 # n by n_traits synthetic traits, made uncorrelated on the training individuals
 traits = synthetic_traits(model, X, train_test == 0)
 ```
 
-Options: `n_iter` steps per trait (default 10000), `learning_rate` for RMSprop (default 1e-4), `noise_level` for data augmentation (default 0.1): the maximum of the uniform noise added to the measurements at each step, or its standard deviation with `noise='normal'`, `clip` for the standardized traits in the loss (default 2, `None` for no clipping), `model_file` to save the model every `save_every` steps (default 1000) and after each trait, and `device` (e.g. `"cuda"`) to train on a GPU.
+Each step adds random noise to the training measurements (data augmentation), which regularizes the traits.
+For a linear trait, noise with standard deviation s has the same effect as a ridge penalty s^2 |w|^2 in the denominator of the heritability, so the trained trait 1 is the trait 1 of `PCH` with ridge s^2 / v (v: the mean variance of the measurements).
+
+Options: `n_iter` steps per trait (default 10000); `optimizer`, `'adam'` (default) or `'rmsprop'`; `learning_rate` (default 1e-3); `noise_level` for data augmentation (default 0.1): the maximum of the uniform noise added to the measurements at each step, or its standard deviation with `noise='normal'`; `clip` for the standardized traits in the loss (default 2, `None` for no clipping); `model_file` to save the model every `save_every` steps (default 1000) and after each trait; and `device` (e.g. `"cuda"`) to train on a GPU.
+`'adam'` uses momentum 0.99 and decays the learning rate to 0 on a cosine schedule over the `n_iter` steps of each trait, so a model saved before the end of a trait is not fully trained.
+`'rmsprop'` is the optimizer of the paper (constant learning rate). It converges slowly when the measurements are strongly correlated: the heritability does not change with the scale of a trait, so its steps shrink relative to the weights as the weights grow.
 `ConvModel` is a convolutional alternative to `LinearModel` for spectra.
-
-### Linear H2-opt with L-BFGS
-
-For linear traits, `LinearH2opt` trains to convergence with L-BFGS (in float64), with a ridge penalty on the weights.
-Each trait stops when an L-BFGS step leaves its loss unchanged (usually after 3-7 steps), or after `n_iter` steps (default 200); `n_steps_` reports the steps of each trait. `device` (e.g. `"cuda"`) runs the fit on a GPU; the traits are the same up to scale, which the objective does not fix.
-The penalty equals the effect of adding independent noise with standard deviation `sqrt(ridge * v)` to the measurements (v: their mean variance), the data augmentation of `train`; the fitted model reports it as `noise_sd_`.
-`LinearH2opt.tune` chooses one ridge for all traits by cross-validation over groups: the mean heritability of the traits on held-out groups, at convergence, averaged over the folds.
-
-```python
-from h2opt import LinearH2opt
-
-is_train = train_test == 0
-# ridges default to h2opt.selection.RIDGES (1e-4 to 100)
-ridge, scores, fold_scores = LinearH2opt.tune(X[is_train], groups[is_train], environment[is_train],
-                                              n_traits=5, n_folds=5)
-model = LinearH2opt(n_traits=5, ridge=ridge).fit(X[is_train], groups[is_train], environment[is_train])
-traits = model.transform(X)
-```
 
 ## Baselines
 
@@ -146,10 +133,10 @@ X_simulated = encode_latent(latent, autoencoder, latent_scale(autoencoder, refer
 
 ```bash
 uv run --all-extras pytest                      # the suite
-uv run --all-extras pytest tests/test_linear.py # narrow by path or -k while iterating
+uv run --all-extras pytest tests/test_train.py  # narrow by path or -k while iterating
 ```
 
-The CUDA test is skipped when no GPU is present.
+The CUDA tests are skipped when no GPU is present.
 
 ## Related repositories
 
