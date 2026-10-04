@@ -56,7 +56,7 @@ def test_select_noise_level_scores_held_out_heritability_of_trait_1(sorghum):
 
     level, scores = selection.select_noise_level(make_model, X, groups, environment, levels,
                                                  n_splits=1, n_folds=3, n_iter=200)
-    assert scores.shape == (1, 2) and level == levels[int(np.argmax(scores[0]))]
+    assert scores.shape == (1, 2) and level == levels[int(np.argmax(scores[0]))]  # one split
     assert selection.noise_scale(X) == pytest.approx(np.sqrt(X.var(axis=0).mean()))
     # the score of level 0.1 on split 0, by hand
     is_val = selection.group_folds(groups, 3) == 0
@@ -67,3 +67,12 @@ def test_select_noise_level_scores_held_out_heritability_of_trait_1(sorghum):
     trait = h2opt.synthetic_traits(model, X, ~is_val)
     expected = h2opt.anova_heritability(trait[is_val], groups[is_val], environment[is_val])[0]
     assert scores[0, 1] == pytest.approx(expected)
+
+
+def test_one_standard_error_choice_takes_the_strongest_setting_near_the_best():
+    scores = np.array([[0.70, 0.72, 0.71, 0.60],
+                       [0.72, 0.74, 0.72, 0.62],
+                       [0.68, 0.70, 0.70, 0.58]])
+    # best: setting 1, mean 0.72, standard error 0.02 / sqrt(3) = 0.0115; setting 2 is at 0.71
+    assert selection.one_standard_error_choice(scores) == 2
+    assert selection.one_standard_error_choice(scores[:1]) == 1

@@ -1,9 +1,10 @@
 """Choosing a regularization strength by heritability on held-out groups.
 
-H2-opt's noise level (select_noise_level) is the one whose first trait has the highest
-heritability on held-out groups, averaged over validation folds of the groups. PCH penalizes
-ridge * v * |w|^2 (v the mean variance of the measurements); its ridge is chosen the same way
-(PCH.tune, through cross_validate). Also the assignment of groups to folds.
+H2-opt's noise level (select_noise_level) is the largest one whose first trait has a held-out
+heritability within one standard error of the best, over validation folds of the groups. PCH
+penalizes ridge * v * |w|^2 (v the mean variance of the measurements); its ridge (PCH.tune,
+through cross_validate) has the highest mean held-out heritability. Also the assignment of groups
+to folds.
 """
 
 import numpy as np
@@ -56,15 +57,34 @@ def noise_scale(X):
     return float(np.sqrt(np.mean(np.var(np.asarray(X, dtype=float), axis=0))))
 
 
-def select_noise_level(make_model, X, groups, environment, levels=NOISE_LEVELS, n_splits=2,
-                       n_folds=5, seed=0, **train_options):
-    """Noise level of H2-opt with the highest held-out heritability of the first trait.
+def one_standard_error_choice(scores):
+    """Index of the setting chosen by the one-standard-error rule, for settings ordered from the
+    weakest to the strongest regularization.
 
-    The groups are assigned to n_folds folds (group_folds); for each of the first n_splits folds,
-    a fresh model (make_model(), a TraitModels) is trained on the other folds with normal noise of
-    standard deviation level * noise_scale(X), for each level, and its first trait is scored by
-    its ANOVA heritability on the held-out fold. train_options go to train (e.g. n_iter, clip,
-    device). Returns (the level with the highest mean score, (n_splits, n_levels) scores).
+    scores is (n_splits, n_settings). The chosen setting is the last one whose mean score is at
+    least the best mean score minus the standard error (over splits) of the best setting. With
+    one split the standard error is 0, and the rule picks the best setting.
+    """
+    scores = np.asarray(scores, dtype=float)
+    mean = scores.mean(axis=0)
+    best = int(np.argmax(mean))
+    n_splits = scores.shape[0]
+    se = scores[:, best].std(ddof=1) / np.sqrt(n_splits) if n_splits > 1 else 0.0
+    return int(np.flatnonzero(mean >= mean[best] - se)[-1])
+
+
+def select_noise_level(make_model, X, groups, environment, levels=NOISE_LEVELS, n_splits=5,
+                       n_folds=5, seed=0, **train_options):
+    """Noise level of H2-opt by the held-out heritability of the first trait.
+
+    The groups are assigned to n_folds folds (group_folds); for each of the first n_splits folds
+    (default: all), a fresh model (make_model(), a TraitModels) is trained on the other folds with
+    normal noise of standard deviation level * noise_scale(X), for each level, and its first trait
+    is scored by its ANOVA heritability on the held-out fold. train_options go to train (e.g.
+    n_iter, clip, device). The levels must increase; the chosen level is the largest one within
+    one standard error of the best mean score (one_standard_error_choice), because the scores
+    change little between levels and more noise is the stronger regularization.
+    Returns (the chosen level, (n_splits, n_levels) scores).
     """
     X = np.asarray(X)
     groups = np.asarray(groups)
@@ -82,4 +102,4 @@ def select_noise_level(make_model, X, groups, environment, levels=NOISE_LEVELS, 
             Y = synthetic_traits(model, X, ~is_val, [0])
             scores[split, a] = anova_heritability(Y[is_val], groups[is_val],
                                                   environment[is_val])[0]
-    return levels[int(np.argmax(scores.mean(axis=0)))], scores
+    return levels[one_standard_error_choice(scores)], scores

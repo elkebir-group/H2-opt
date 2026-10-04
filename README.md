@@ -104,8 +104,8 @@ train(model, X, groups, environment, train_test, n_traits=n_traits,
       noise_level=level * noise_scale(X), noise='normal')
 ```
 
-The groups are split into 5 folds, and folds 0 and 1 are the held-out groups of two validation splits (`n_splits`, `n_folds`).
-The levels are `NOISE_LEVELS` (0 to 3), and the chosen level has the highest mean held-out heritability over the splits.
+The groups are split into 5 folds, and each fold is the held-out groups of one validation split (`n_folds`; `n_splits` uses only the first folds).
+The levels are `NOISE_LEVELS` (0 to 3). The held-out heritability changes little between levels, so the chosen level is the largest one whose mean score is within one standard error of the best (`one_standard_error_choice`): the strongest regularization that the validation cannot tell apart from the best.
 
 ## Baselines
 
