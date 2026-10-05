@@ -1,5 +1,6 @@
 """Training synthetic traits to maximize heritability."""
 
+import contextlib
 import copy
 
 import numpy as np
@@ -23,18 +24,26 @@ def synthetic_traits(model, X, is_train, traits=None):
     return Decorrelation().fit(Y[np.asarray(is_train, bool)]).transform(Y)
 
 
-def _adam(parameters, learning_rate, n_iter):
-    optimizer = torch.optim.Adam(parameters, lr=learning_rate, betas=(0.99, 0.999))
-    return optimizer, torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, n_iter)
+def _cosine(learning_rate, n_iter):
+    """Learning rate of each step, from learning_rate to 0 on a cosine schedule."""
+    return learning_rate * (1 + np.cos(np.pi * np.arange(n_iter) / n_iter)) / 2
 
 
-def _rmsprop(parameters, learning_rate, n_iter):
-    optimizer = torch.optim.RMSprop(parameters, lr=learning_rate)
-    return optimizer, torch.optim.lr_scheduler.LambdaLR(optimizer, lambda step: 1.0)
+def _constant(learning_rate, n_iter):
+    return np.full(n_iter, learning_rate)
 
 
-# The optimizer of one trait and its learning-rate schedule, by name.
-_OPTIMIZERS = {'adam': _adam, 'rmsprop': _rmsprop}
+def _adam(parameters, learning_rate, capturable):
+    return torch.optim.Adam(parameters, lr=learning_rate, betas=(0.99, 0.999),
+                            capturable=capturable)
+
+
+def _rmsprop(parameters, learning_rate, capturable):
+    return torch.optim.RMSprop(parameters, lr=learning_rate, capturable=capturable)
+
+
+# The optimizer of one trait and the learning rate of each of its steps, by name.
+_OPTIMIZERS = {'adam': (_adam, _cosine), 'rmsprop': (_rmsprop, _constant)}
 
 # Noise draws of standard scale, by name: uniform in [0, 1) or standard normal.
 _NOISE = {'uniform': torch.rand, 'normal': torch.randn}
@@ -102,28 +111,66 @@ def train_batch(models, X, groups, environment, train_rows, noise_levels, earlie
     def forward(p, b, x):
         return functional_call(base, (p, b), (x,))[:, 0]
 
-    def noisy_traits(Z):
-        """(n, B) outputs of the copies on X + level * Z."""
+    def noisy_traits():
+        """(n, B) outputs of the copies on X + level * Z, Z a fresh noise draw."""
         if isinstance(base, LinearModel):
-            # (X + level Z) w = X w + level (Z w): no noisy copy of X per copy
             W = params['lin1.weight'][:, 0, :].T
-            return X @ W + (Z @ W) * noise_levels.reshape((1, -1)) + params['lin1.bias'].T
+            if noise == 'normal':
+                # each copy's Z w is normal with standard deviation |w| per individual, so draw it
+                # directly: the same loss distribution without a noisy (n, m) draw
+                noise_w = draw((X.shape[0], 1), device=device) * torch.linalg.norm(W, axis=0)
+            else:
+                # (X + level Z) w = X w + level (Z w): no noisy copy of X per copy
+                noise_w = draw(X.shape, device=device) @ W
+            return X @ W + noise_w * noise_levels.reshape((1, -1)) + params['lin1.bias'].T
+        Z = draw(X.shape, device=device)
         return vmap(forward)(params, buffers, X + Z * noise_levels.reshape((-1, 1, 1))).T
 
-    trait_optimizer, schedule = _OPTIMIZERS[optimizer](list(params.values()), learning_rate,
-                                                       n_iter)
-    for _ in range(n_iter):
-        Y = noisy_traits(draw(X.shape, device=device))
+    def step():
+        Y = noisy_traits()
         Y = (Y - (Y * mask).sum(axis=0) / n_train) * mask
         Y = Y - torch.einsum('knt,kt->nk', bases, torch.einsum('knt,nk->kt', bases, Y))
         Y = Y / ((Y ** 2 * mask).sum(axis=0) / n_train) ** 0.5
         if clip is not None:
             Y = torch.clamp(Y, -clip, clip)
         loss = -torch.sum(design.heritability(Y))
-        trait_optimizer.zero_grad()
         loss.backward()
         trait_optimizer.step()
-        schedule.step()
+
+    # On a GPU, one step is recorded as a CUDA graph after a few ordinary steps and then replayed:
+    # a step launches many small kernels, and one replay costs less than launching them.
+    cuda = torch.device(device).type == 'cuda'
+    make_optimizer, schedule = _OPTIMIZERS[optimizer]
+    rates = schedule(learning_rate, n_iter)
+    rate = torch.tensor(learning_rate, device=device) if cuda else learning_rate
+    trait_optimizer = make_optimizer(list(params.values()), rate, cuda)
+
+    def set_rate(i):
+        if cuda:
+            rate.fill_(rates[i])
+        else:
+            for group in trait_optimizer.param_groups:
+                group['lr'] = rates[i]
+
+    n_ordinary = min(n_iter, 3) if cuda else n_iter
+    stream = torch.cuda.Stream(device) if cuda else None
+    if cuda:
+        stream.wait_stream(torch.cuda.current_stream(device))
+    with torch.cuda.stream(stream) if cuda else contextlib.nullcontext():
+        for i in range(n_ordinary):
+            set_rate(i)
+            trait_optimizer.zero_grad(set_to_none=True)
+            step()
+    if cuda:
+        torch.cuda.current_stream(device).wait_stream(stream)
+    if n_ordinary < n_iter:
+        graph = torch.cuda.CUDAGraph()
+        trait_optimizer.zero_grad(set_to_none=True)
+        with torch.cuda.graph(graph):
+            step()
+        for i in range(n_ordinary, n_iter):
+            set_rate(i)
+            graph.replay()
 
     with torch.no_grad():
         for c, model in enumerate(models):

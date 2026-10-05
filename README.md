@@ -93,7 +93,9 @@ Options: `n_iter` steps per trait (default 10000); `optimizer`, `'adam'` (defaul
 `train_batch` trains one trait in each of many models at once, each with its own training individuals, noise level and earlier traits.
 `train_models` trains several `TraitModels` at once on it, each with its own `train_test` and noise levels (e.g. the outer folds of a dataset, or one model per noise level); `train` is `train_models` with one model.
 The copies share each noise draw, scaled by their own level, and each copy gets only its own gradient.
-For `LinearModel` it is fast, because (X + noise) w = X w + noise w needs no noisy copy of X per model: on an RTX 3080, 400 sorghum-sized linear models train at about 190,000 model-steps per second, against about 900 for one model.
+For `LinearModel` it is fast, because (X + noise) w = X w + noise w needs no noisy copy of X per model, and with normal noise each model's noise w is drawn directly (normal with standard deviation |w| per individual).
+On a GPU, one step is recorded as a CUDA graph and replayed, which removes the cost of launching its many small kernels.
+On an RTX 3080, one sorghum-sized linear model trains at about 2,500 steps per second, and 400 at about 210,000 model-steps per second.
 Other models are trained with `torch.func.vmap`, which gives no speedup for `ConvModel`.
 
 ### Choosing the noise level

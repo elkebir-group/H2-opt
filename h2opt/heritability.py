@@ -33,7 +33,7 @@ def _center_by(Y, mask, codes, n_codes):
     """Y minus the mean of its column over the rows of each code, among the rows where mask is 1;
     0 where mask is 0."""
     means = _segment_sum(Y * mask, codes, n_codes) / _segment_sum(mask, codes, n_codes).clamp(min=1)
-    return (Y - means[codes]) * mask
+    return (Y - means.index_select(0, codes)) * mask
 
 
 class AnovaDesign:

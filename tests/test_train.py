@@ -139,7 +139,8 @@ def test_train_takes_one_noise_level_per_trait(sorghum):
 
 
 def test_train_batch_linear_model_matches_the_generic_path(sorghum):
-    # LinearModel takes a shortcut, (X + level Z) w = X w + level (Z w); a plain nn.Linear does not
+    # LinearModel takes a shortcut, (X + level Z) w = X w + level (Z w); a plain nn.Linear does not.
+    # With normal noise, LinearModel draws Z w directly, and its draws differ from the generic path.
     X, groups, environment = sorghum
     X = X[:, ::20]
     rows = np.random.RandomState(0).randint(4, size=len(groups)) != 0
@@ -148,7 +149,8 @@ def test_train_batch_linear_model_matches_the_generic_path(sorghum):
     plain = copy.deepcopy(linear.lin1)
     for model in (linear, plain):
         torch.manual_seed(1)
-        h2opt.train_batch([model], X, groups, environment, [rows], [0.002], n_iter=100)
+        h2opt.train_batch([model], X, groups, environment, [rows], [0.002], n_iter=100,
+                          noise='uniform')
     torch.testing.assert_close(linear.lin1.weight, plain.weight, rtol=0, atol=1e-5)
 
 
