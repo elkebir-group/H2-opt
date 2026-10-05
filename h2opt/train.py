@@ -42,7 +42,7 @@ _OPTIMIZERS = {'adam': _adam, 'rmsprop': _rmsprop}
 
 def train(model, X, groups, environment, train_test, model_file=None, n_traits=1, first_trait=0,
           n_iter=10000, optimizer='adam', learning_rate=1e-3, noise_level=0.1, noise='uniform',
-          clip=2.0, penalty=None, device='cpu', verbose=True, print_every=100, save_every=1000):
+          clip=None, penalty=None, device='cpu', verbose=True, print_every=100, save_every=1000):
     """Train synthetic traits one at a time to maximize their ANOVA heritability on training data.
 
     model: a TraitModels with at least n_traits traits; X: (n, m) measurements.
@@ -60,8 +60,9 @@ def train(model, X, groups, environment, train_test, model_file=None, n_traits=1
     change with the scale of a trait, so RMSprop's steps shrink relative to the weights as the
     weights grow, and it converges slowly for correlated measurements; momentum and the decay fix
     this. noise is 'uniform' (in [0, noise_level), the paper's sorghum setting) or 'normal'
-    (standard deviation noise_level, the paper's simulation setting). The standardized traits are
-    clipped to [-clip, clip] in the loss (clip=None: no clipping; the simulation used none).
+    (standard deviation noise_level, the paper's simulation setting). With clip, the standardized
+    traits are clipped to [-clip, clip] in the loss (the paper's sorghum setting was 2); by
+    default (None) the loss is the plain heritability, as in the paper's simulation.
     penalty(trait_model, Y) is an optional regularization term added to the loss, given the model
     of the current trait and its raw (n_train, 1) output on the noisy training data.
     If model_file is given, the whole model is saved every save_every steps and after each trait.

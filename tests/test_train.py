@@ -45,7 +45,7 @@ def test_train_with_normal_noise_and_no_clip(sorghum):
     torch.manual_seed(0)
     model = h2opt.TraitModels(2, h2opt.LinearModel, X.shape[1])
     h2opt.train(model, X, groups, environment, np.zeros(len(groups), dtype=int), n_traits=2,
-                n_iter=20, learning_rate=1e-3, noise_level=0.02, noise='normal', clip=None,
+                n_iter=20, learning_rate=1e-3, noise_level=0.02, noise='normal',
                 verbose=False)
     traits = model(torch.tensor(X).float()).detach()
     assert torch.isfinite(traits).all()
@@ -74,7 +74,7 @@ def test_adam_reaches_the_pch_trait(sorghum):
     torch.manual_seed(0)
     model = h2opt.TraitModels(1, h2opt.LinearModel, X.shape[1])
     h2opt.train(model, X, groups, environment, np.zeros(len(groups), dtype=int), n_iter=10000,
-                noise_level=s, noise='normal', clip=None, verbose=False)
+                noise_level=s, noise='normal', verbose=False)
     trait = h2opt.synthetic_traits(model, X, np.ones(len(groups), dtype=bool))[:, 0]
     assert abs(np.corrcoef(trait, pch.transform(X)[:, 0])[0, 1]) > 0.9999
 
