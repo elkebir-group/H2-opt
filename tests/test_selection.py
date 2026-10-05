@@ -45,29 +45,30 @@ def test_pch_tune_scores_held_out_heritability(sorghum):
     assert h2opt.selection.RIDGES[0] == pytest.approx(1e-6)
 
 
-def test_select_noise_levels_chooses_one_level_per_trait_by_held_out_heritability(sorghum):
+def test_select_noise_level_chooses_one_level_by_held_out_heritability(sorghum):
     X, groups, environment = sorghum
     X = X[:, ::20]
     levels = (0.0, 0.1)
-    chosen, scores, traits = selection.select_noise_levels(lambda: h2opt.LinearModel(X.shape[1]), X,
-                                                   groups, environment, 2, levels=levels,
-                                                   n_splits=2, n_folds=3, n_iter=100)
-    assert chosen.shape == (1, 2) and scores.shape == (1, 2, 2, 2)
+    chosen, scores, traits = selection.select_noise_level(lambda: h2opt.LinearModel(X.shape[1]),
+                                                          X, groups, environment, 2,
+                                                          levels=levels, n_splits=2, n_folds=3,
+                                                          n_iter=100)
+    assert chosen.shape == (1,) and scores.shape == (1, 2, 2, 2)
     assert traits.shape == (1, 2, 2, 2, len(groups))
     assert np.isfinite(scores).all()
-    for t in range(2):
-        assert chosen[0, t] == levels[int(np.argmax(scores[0, t].mean(axis=0)))]
-    # the saved trait 1 of split 0 at level 1 gives its score again
+    assert chosen[0] == levels[int(np.argmax(scores[0].mean(axis=(0, 1))))]
+    # the saved traits 1 and 2 of split 0 at level 1 give the score of trait 2 again
     fold = selection.group_folds(groups, 3)
     fit, val = fold != 0, fold == 0
-    trait = h2opt.Decorrelation().fit(traits[0, 0, 0, 1][fit, None]).transform(
-        traits[0, 0, 0, 1][:, None].astype(float))
+    Y = traits[0, :, 0, 1].T.astype(float)
+    trait = h2opt.Decorrelation().fit(Y[fit]).transform(Y)[:, -1:]
     expected = h2opt.anova_heritability(trait[val], groups[val], environment[val])[0]
-    assert scores[0, 0, 0, 1] == pytest.approx(expected, abs=1e-5)
+    assert scores[0, 1, 0, 1] == pytest.approx(expected, abs=1e-5)
     assert selection.noise_scale(X) == pytest.approx(np.sqrt(X.var(axis=0).mean()))
+    assert selection.NOISE_LEVELS[4] ** 2 == pytest.approx(selection.RIDGES[4])
 
 
-def test_select_noise_levels_on_subsets_ignores_the_other_individuals(sorghum):
+def test_select_noise_level_on_subsets_ignores_the_other_individuals(sorghum):
     # the selection on a subset is the same whether it runs alone or with another subset, and
     # whatever the measurements outside the subset are (at level 0: with noise, the shared draw
     # differs with the set of individuals)
@@ -81,8 +82,8 @@ def test_select_noise_levels_on_subsets_ignores_the_other_individuals(sorghum):
     def make_model():
         return h2opt.LinearModel(X.shape[1])
 
-    _, together, _ = selection.select_noise_levels(make_model, X, groups, environment, 1,
-                                                [subset, ~subset], **options)
-    _, alone, _ = selection.select_noise_levels(make_model, changed, groups, environment, 1,
-                                             [subset], **options)
+    _, together, _ = selection.select_noise_level(make_model, X, groups, environment, 1,
+                                                   [subset, ~subset], **options)
+    _, alone, _ = selection.select_noise_level(make_model, changed, groups, environment, 1,
+                                                [subset], **options)
     np.testing.assert_allclose(together[0], alone[0], atol=1e-4)

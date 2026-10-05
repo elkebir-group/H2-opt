@@ -100,23 +100,23 @@ Other models are trained with `torch.func.vmap`, which gives no speedup for `Con
 
 ### Choosing the noise level
 
-`select_noise_levels` chooses one noise level per trait from the data. For each trait in order and each level, it trains the trait on part of the groups, on top of the earlier traits chosen for that split, and scores its heritability on the held-out groups.
+`select_noise_level` chooses one noise level for all traits from the data. For each level, it trains all traits in order on part of the groups and scores their heritability on the held-out groups.
 Each level is the standard deviation of normal noise as a fraction of `noise_scale(X)`, the root mean variance of the measurements, so the same levels apply to data on any scale.
 
 ```python
-from h2opt.selection import noise_scale, select_noise_levels
+from h2opt.selection import noise_scale, select_noise_level
 
 is_train = train_test == 0
-levels, scores, traits = select_noise_levels(lambda: LinearModel(X.shape[1]), X, groups, environment,
-                                     n_traits, subsets=[is_train], n_iter=10000)
+level, scores, traits = select_noise_level(lambda: LinearModel(X.shape[1]), X, groups, environment,
+                                           n_traits, subsets=[is_train], n_iter=10000)
 train(model, X, groups, environment, train_test, n_traits=n_traits,
-      noise_level=levels[0] * noise_scale(X[is_train]), noise='normal')
+      noise_level=level[0] * noise_scale(X[is_train]), noise='normal')
 ```
 
 Within each subset of the individuals (`subsets`, e.g. the training individuals of several outer folds, all chosen in one batch), the groups are split into 5 folds, and each fold is the held-out groups of one validation split (`n_folds`; `n_splits` uses only the first folds).
-The levels are `NOISE_LEVELS` (0 to 3). The chosen level has the best mean held-out heritability over the splits, the same rule as `PCH.tune`.
-`select_noise_levels` also returns the trained validation traits (before decorrelation) for each subset, trait, split and level. With them, the choices of another rule can be scored again without training; only the traits after a changed choice need training again.
+The levels are `NOISE_LEVELS` (0.001 to 10), the square roots of the PCH ridges `RIDGES`, so that level s has the penalty of ridge s^2. The chosen level has the best held-out heritability averaged over the traits and splits, the same rule as `PCH.tune`.
 All subsets, splits and levels of a trait are trained together by `train_batch`.
+`select_noise_level` also returns the scores of each trait and the trained validation traits (before decorrelation) for each subset, trait, split and level. The traits of a level do not depend on the other levels, so another rule over the levels can be examined without training again.
 
 ## Baselines
 
