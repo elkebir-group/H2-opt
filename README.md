@@ -107,14 +107,15 @@ Each level is the standard deviation of normal noise as a fraction of `noise_sca
 from h2opt.selection import noise_scale, select_noise_levels
 
 is_train = train_test == 0
-levels, scores = select_noise_levels(lambda: LinearModel(X.shape[1]), X, groups, environment,
+levels, scores, traits = select_noise_levels(lambda: LinearModel(X.shape[1]), X, groups, environment,
                                      n_traits, subsets=[is_train], n_iter=10000)
 train(model, X, groups, environment, train_test, n_traits=n_traits,
       noise_level=levels[0] * noise_scale(X[is_train]), noise='normal')
 ```
 
 Within each subset of the individuals (`subsets`, e.g. the training individuals of several outer folds, all chosen in one batch), the groups are split into 5 folds, and each fold is the held-out groups of one validation split (`n_folds`; `n_splits` uses only the first folds).
-The levels are `NOISE_LEVELS` (0 to 3). The held-out heritability often changes little between levels, so the chosen level is the largest one whose mean score is within one standard error of the best (`one_standard_error_choice`): the strongest regularization that the validation cannot tell apart from the best.
+The levels are `NOISE_LEVELS` (0 to 3). The chosen level has the best mean held-out heritability over the splits, the same rule as `PCH.tune`.
+`select_noise_levels` also returns the trained validation traits (before decorrelation) for each subset, trait, split and level. With them, the choices of another rule can be scored again without training; only the traits after a changed choice need training again.
 All subsets, splits and levels of a trait are trained together by `train_batch`.
 
 ## Baselines

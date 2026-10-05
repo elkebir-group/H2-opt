@@ -1,10 +1,9 @@
 """Choosing a regularization strength by heritability on held-out groups.
 
-H2-opt's noise levels (select_noise_levels), one per trait: for each trait in order, the largest
-level whose trait has a held-out heritability within one standard error of the best, over
-validation folds of the groups. PCH penalizes ridge * v * |w|^2 (v the mean variance of the
-measurements); its ridge (PCH.tune, through cross_validate) has the highest mean held-out
-heritability. Also the assignment of groups to folds.
+H2-opt's noise levels (select_noise_levels), one per trait: for each trait in order, the level
+whose trait has the highest mean held-out heritability over validation folds of the groups.
+PCH penalizes ridge * v * |w|^2 (v the mean variance of the measurements); its ridge (PCH.tune,
+through cross_validate) is chosen by the same rule. Also the assignment of groups to folds.
 """
 
 import copy
@@ -60,22 +59,6 @@ def noise_scale(X):
     return float(np.sqrt(np.mean(np.var(np.asarray(X, dtype=float), axis=0))))
 
 
-def one_standard_error_choice(scores):
-    """Index of the setting chosen by the one-standard-error rule, for settings ordered from the
-    weakest to the strongest regularization.
-
-    scores is (n_splits, n_settings). The chosen setting is the last one whose mean score is at
-    least the best mean score minus the standard error (over splits) of the best setting. With
-    one split the standard error is 0, and the rule picks the best setting.
-    """
-    scores = np.asarray(scores, dtype=float)
-    mean = scores.mean(axis=0)
-    best = int(np.argmax(mean))
-    n_splits = scores.shape[0]
-    se = scores[:, best].std(ddof=1) / np.sqrt(n_splits) if n_splits > 1 else 0.0
-    return int(np.flatnonzero(mean >= mean[best] - se)[-1])
-
-
 def select_noise_levels(make_model, X, groups, environment, n_traits, subsets=None,
                         levels=NOISE_LEVELS, n_splits=5, n_folds=5, seed=0, **train_options):
     """Noise level of each H2-opt trait by its held-out heritability.
@@ -89,12 +72,14 @@ def select_noise_levels(make_model, X, groups, environment, n_traits, subsets=No
     (X of the subset), on top of traits 0..t-1 of that split (in the loss, the trait is its
     residual on them, as in train). Its score is the ANOVA heritability on the held-out fold of
     the trait made uncorrelated with traits 0..t-1 on the training folds (Decorrelation, as in
-    synthetic_traits). The levels must increase; the chosen level is the largest one within one
-    standard error of the best mean score (one_standard_error_choice), because the scores often
-    change little between levels and more noise is the stronger regularization. Each split then
-    keeps its trait t trained at the chosen level. All subsets, splits and levels of one trait are
-    trained together by train_batch; train_options go to it (e.g. n_iter, device).
-    Returns (the chosen levels (k, n_traits), (k, n_traits, n_splits, n_levels) scores).
+    synthetic_traits). The chosen level has the best mean score over the splits, as for the PCH
+    ridge (PCH.tune). Each split then keeps its trait t trained at the chosen level. All subsets,
+    splits and levels of one trait are trained together by train_batch; train_options go to it
+    (e.g. n_iter, device).
+    Returns (the chosen levels (k, n_traits), (k, n_traits, n_splits, n_levels) scores, and the
+    trained traits before decorrelation, (k, n_traits, n_splits, n_levels, n) float32, on all n
+    individuals). With the traits, the scores of any other rule's choice of trait t can be
+    computed again without training, but the traits after t depend on the choice.
     """
     X = np.asarray(X)
     groups = np.asarray(groups)
@@ -116,6 +101,7 @@ def select_noise_levels(make_model, X, groups, environment, n_traits, subsets=No
     earlier = [np.zeros((len(groups), 0)) for _ in pairs]
     chosen = np.zeros((n_subsets, n_traits))
     scores = np.zeros((n_subsets, n_traits, n_splits, len(levels)))
+    traits = np.zeros((n_subsets, n_traits, n_splits, len(levels), len(groups)), dtype=np.float32)
     for t in range(n_traits):
         torch.manual_seed(seed + t)
         start = make_model()
@@ -131,12 +117,13 @@ def select_noise_levels(make_model, X, groups, environment, n_traits, subsets=No
             Y = np.column_stack([earlier[p], outputs[p, a]])
             trait = Decorrelation().fit(Y[fit[p]]).transform(Y)[:, -1:]
             i, split = pairs[p]
+            traits[i, t, split, a] = outputs[p, a]
             scores[i, t, split, a] = anova_heritability(trait[held_out[p]], groups[held_out[p]],
                                                         environment[held_out[p]])[0]
         for i in range(n_subsets):
-            a = one_standard_error_choice(scores[i, t])
+            a = int(np.argmax(scores[i, t].mean(axis=0)))
             chosen[i, t] = levels[a]
             for p, (j, _) in enumerate(pairs):
                 if j == i:
                     earlier[p] = np.column_stack([earlier[p], outputs[p, a]])
-    return chosen, scores
+    return chosen, scores, traits

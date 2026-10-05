@@ -49,13 +49,21 @@ def test_select_noise_levels_chooses_one_level_per_trait_by_held_out_heritabilit
     X, groups, environment = sorghum
     X = X[:, ::20]
     levels = (0.0, 0.1)
-    chosen, scores = selection.select_noise_levels(lambda: h2opt.LinearModel(X.shape[1]), X,
+    chosen, scores, traits = selection.select_noise_levels(lambda: h2opt.LinearModel(X.shape[1]), X,
                                                    groups, environment, 2, levels=levels,
                                                    n_splits=2, n_folds=3, n_iter=100)
     assert chosen.shape == (1, 2) and scores.shape == (1, 2, 2, 2)
+    assert traits.shape == (1, 2, 2, 2, len(groups))
     assert np.isfinite(scores).all()
     for t in range(2):
-        assert chosen[0, t] == levels[selection.one_standard_error_choice(scores[0, t])]
+        assert chosen[0, t] == levels[int(np.argmax(scores[0, t].mean(axis=0)))]
+    # the saved trait 1 of split 0 at level 1 gives its score again
+    fold = selection.group_folds(groups, 3)
+    fit, val = fold != 0, fold == 0
+    trait = h2opt.Decorrelation().fit(traits[0, 0, 0, 1][fit, None]).transform(
+        traits[0, 0, 0, 1][:, None].astype(float))
+    expected = h2opt.anova_heritability(trait[val], groups[val], environment[val])[0]
+    assert scores[0, 0, 0, 1] == pytest.approx(expected, abs=1e-5)
     assert selection.noise_scale(X) == pytest.approx(np.sqrt(X.var(axis=0).mean()))
 
 
@@ -73,17 +81,8 @@ def test_select_noise_levels_on_subsets_ignores_the_other_individuals(sorghum):
     def make_model():
         return h2opt.LinearModel(X.shape[1])
 
-    _, together = selection.select_noise_levels(make_model, X, groups, environment, 1,
+    _, together, _ = selection.select_noise_levels(make_model, X, groups, environment, 1,
                                                 [subset, ~subset], **options)
-    _, alone = selection.select_noise_levels(make_model, changed, groups, environment, 1,
+    _, alone, _ = selection.select_noise_levels(make_model, changed, groups, environment, 1,
                                              [subset], **options)
     np.testing.assert_allclose(together[0], alone[0], atol=1e-4)
-
-
-def test_one_standard_error_choice_takes_the_strongest_setting_near_the_best():
-    scores = np.array([[0.70, 0.72, 0.71, 0.60],
-                       [0.72, 0.74, 0.72, 0.62],
-                       [0.68, 0.70, 0.70, 0.58]])
-    # best: setting 1, mean 0.72, standard error 0.02 / sqrt(3) = 0.0115; setting 2 is at 0.71
-    assert selection.one_standard_error_choice(scores) == 2
-    assert selection.one_standard_error_choice(scores[:1]) == 1
