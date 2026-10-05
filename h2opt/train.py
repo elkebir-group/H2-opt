@@ -156,36 +156,61 @@ def train(model, X, groups, environment, train_test, model_file=None, n_traits=1
     (standard deviation noise_level, the paper's simulation setting). With clip, the standardized
     traits are clipped to [-clip, clip] in the loss (the paper's sorghum setting was 2); by
     default (None) the loss is the plain heritability, as in the paper's simulation.
-    If model_file is given, the whole model is saved after each trait. Each trait is trained by
-    train_batch.
+    If model_file is given, the whole model is saved after each trait. This is train_models with
+    one model.
     """
-    groups = np.asarray(groups)
-    train_test = np.asarray(train_test)
-    is_train, is_test = train_test == 0, train_test == 1
-    levels = np.broadcast_to(np.asarray(noise_level, dtype=float), (n_traits,))
-    x = torch.as_tensor(np.asarray(X), dtype=torch.float32, device=device)
-    model.to(device)
-
-    for trait in range(first_trait, n_traits):
-        with torch.no_grad():
-            earlier = model(x, np.arange(trait)).double().cpu().numpy()
-        train_batch([model.models[trait]], X, groups, environment, is_train[None], [levels[trait]],
-                    [earlier], n_iter=n_iter, optimizer=optimizer, learning_rate=learning_rate,
-                    noise=noise, clip=clip, device=device)
-        if verbose:
-            Y = synthetic_traits(model, X, is_train, np.arange(trait + 1))[:, -1:]
-            env = np.asarray(environment) if environment is not None else None
-            message = f'trait {trait}: train heritability '
-            message += f'{anova_heritability(Y[is_train], groups[is_train], _rows(env, is_train))}'
-            if np.any(is_test):
-                message += ', test heritability '
-                message += f'{anova_heritability(Y[is_test], groups[is_test], _rows(env, is_test))}'
-            print(message, flush=True)
-        if model_file is not None:
-            torch.save(model, model_file)
-
+    train_models([model], X, groups, environment, np.asarray(train_test)[None],
+                 model_files=None if model_file is None else [model_file], n_traits=n_traits,
+                 first_trait=first_trait, n_iter=n_iter, optimizer=optimizer,
+                 learning_rate=learning_rate, noise_levels=noise_level, noise=noise, clip=clip,
+                 device=device, verbose=verbose)
     return model
 
 
-def _rows(environment, rows):
-    return environment[rows] if environment is not None else None
+def train_models(models, X, groups, environment, train_test, model_files=None, n_traits=1,
+                 first_trait=0, n_iter=10000, optimizer='adam', learning_rate=1e-3,
+                 noise_levels=0.1, noise='uniform', clip=None, device='cpu', verbose=True):
+    """Train several TraitModels at once, each as by train with its own data split and noise.
+
+    models: B TraitModels of one kind. train_test: (B, n) array, the train_test of each model.
+    noise_levels: one level for all, one per model (B, 1), or one per model and trait
+    (B, n_traits). model_files: None, or one file per model. Trait t of all models is trained
+    together by train_batch, each model on top of its own traits 0..t-1, so the models share each
+    noise draw. With verbose, the train and test heritability of each trait of each model is
+    printed. The other options are as in train. Returns models.
+    """
+    groups = np.asarray(groups)
+    train_test = np.asarray(train_test).reshape((len(models), -1))
+    is_train, is_test = train_test == 0, train_test == 1
+    levels = np.broadcast_to(np.asarray(noise_levels, dtype=float), (len(models), n_traits))
+    env = np.asarray(environment) if environment is not None else None
+    x = torch.as_tensor(np.asarray(X), dtype=torch.float32, device=device)
+    for model in models:
+        model.to(device)
+
+    for trait in range(first_trait, n_traits):
+        earlier = []
+        for model in models:
+            with torch.no_grad():
+                earlier.append(model(x, np.arange(trait)).double().cpu().numpy())
+        train_batch([model.models[trait] for model in models], X, groups, environment, is_train,
+                    levels[:, trait], earlier, n_iter=n_iter, optimizer=optimizer,
+                    learning_rate=learning_rate, noise=noise, clip=clip, device=device)
+        for b, model in enumerate(models):
+            if verbose:
+                Y = synthetic_traits(model, X, is_train[b], np.arange(trait + 1))[:, -1:]
+                message = f'model {b} ' if len(models) > 1 else ''
+                message += f'trait {trait}: train heritability {_h2(Y, groups, env, is_train[b])}'
+                if np.any(is_test[b]):
+                    message += f', test heritability {_h2(Y, groups, env, is_test[b])}'
+                print(message, flush=True)
+            if model_files is not None:
+                torch.save(model, model_files[b])
+
+    return models
+
+
+def _h2(Y, groups, environment, rows):
+    """ANOVA heritability of the traits Y on the selected rows."""
+    return anova_heritability(Y[rows], groups[rows],
+                              environment[rows] if environment is not None else None)

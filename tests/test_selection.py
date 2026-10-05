@@ -42,7 +42,7 @@ def test_pch_tune_scores_held_out_heritability(sorghum):
     traits = pch.transform(X[val])
     expected = h2opt.anova_heritability(traits, groups[val], environment[val]).mean()
     assert fold_scores[0, 1] == pytest.approx(expected)
-    assert h2opt.selection.RIDGES[0] == pytest.approx(1e-4)
+    assert h2opt.selection.RIDGES[0] == pytest.approx(1e-6)
 
 
 def test_select_noise_levels_chooses_one_level_per_trait_by_held_out_heritability(sorghum):

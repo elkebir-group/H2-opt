@@ -90,7 +90,8 @@ Options: `n_iter` steps per trait (default 10000); `optimizer`, `'adam'` (defaul
 `'rmsprop'` is the optimizer of the paper (constant learning rate). It converges slowly when the measurements are strongly correlated: the heritability does not change with the scale of a trait, so its steps shrink relative to the weights as the weights grow.
 `ConvModel` is a convolutional alternative to `LinearModel` for spectra.
 
-`train_batch` trains one trait in each of many models at once, each with its own training individuals, noise level and earlier traits; `train` uses it for each trait.
+`train_batch` trains one trait in each of many models at once, each with its own training individuals, noise level and earlier traits.
+`train_models` trains several `TraitModels` at once on it, each with its own `train_test` and noise levels (e.g. the outer folds of a dataset, or one model per noise level); `train` is `train_models` with one model.
 The copies share each noise draw, scaled by their own level, and each copy gets only its own gradient.
 For `LinearModel` it is fast, because (X + noise) w = X w + noise w needs no noisy copy of X per model: on an RTX 3080, 400 sorghum-sized linear models train at about 190,000 model-steps per second, against about 900 for one model.
 Other models are trained with `torch.func.vmap`, which gives no speedup for `ConvModel`.
@@ -123,6 +124,7 @@ Their traits are centered and made uncorrelated on the training individuals (`De
 - `GeneticPCA(n_traits)`: principal components of the ANOVA estimate of the genetic covariance.
 - `LDA(n_traits)`: linear discriminant analysis of the groups (unregularized).
 - `PCH(n_traits, ridge)`: principal components of heritability, maximizing the ANOVA heritability above with ridge regularization.
+  `PCH.tune` chooses the ridge from `RIDGES` (1e-6 to 100) by the highest mean held-out heritability.
 - `MaxHeritabilityFeatures(n_traits)`: the most heritable individual features, selected greedily.
 
 ```python

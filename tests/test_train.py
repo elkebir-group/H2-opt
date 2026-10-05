@@ -150,3 +150,21 @@ def test_train_batch_linear_model_matches_the_generic_path(sorghum):
         torch.manual_seed(1)
         h2opt.train_batch([model], X, groups, environment, [rows], [0.002], n_iter=100)
     torch.testing.assert_close(linear.lin1.weight, plain.weight, rtol=0, atol=1e-5)
+
+
+def test_train_models_trains_each_model_as_alone(sorghum):
+    # without noise, models trained together on different splits match models trained alone
+    X, groups, environment = sorghum
+    X = X[:, ::20]
+    splits = np.random.RandomState(0).randint(2, size=(2, len(groups)))
+    torch.manual_seed(0)
+    start = h2opt.TraitModels(2, h2opt.LinearModel, X.shape[1])
+    together = [copy.deepcopy(start) for _ in splits]
+    h2opt.train_models(together, X, groups, environment, splits, n_traits=2, n_iter=50,
+                       noise_levels=0.0, verbose=False)
+    for model, train_test in zip(together, splits, strict=True):
+        alone = h2opt.train(copy.deepcopy(start), X, groups, environment, train_test, n_traits=2,
+                            n_iter=50, noise_level=0.0, verbose=False)
+        is_train = train_test == 0
+        np.testing.assert_allclose(h2opt.synthetic_traits(model, X, is_train),
+                                   h2opt.synthetic_traits(alone, X, is_train), atol=1e-4)

@@ -21,7 +21,7 @@ from .train import train_batch
 NOISE_LEVELS = (0.0, 0.003, 0.01, 0.03, 0.1, 0.3, 1.0, 3.0)
 
 # ridge 1 is the penalty of input noise with the standard deviation of a typical measurement.
-RIDGES = tuple(float(r) for r in np.logspace(-4, 2, 13))
+RIDGES = tuple(float(r) for r in np.logspace(-6, 2, 17))
 
 
 def per_group(groups, draw):

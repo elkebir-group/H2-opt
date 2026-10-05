@@ -28,7 +28,7 @@ installs this checkout as an editable sibling (`../H2-opt`).
 | Module | Content |
 |---|---|
 | `heritability.py` | `anova_heritability`, `AnovaDesign`, `Henderson3`, `genetic_covariance` |
-| `models.py`, `train.py` | trait models; the training loop `train_batch` (many copies at once; fast for linear models) and `train` on it (Adam, or the paper's RMSprop), `synthetic_traits` |
+| `models.py`, `train.py` | trait models; the training loop `train_batch` (many copies at once; fast for linear models), `train_models` (several models, e.g. one per fold) and `train` on it (Adam, or the paper's RMSprop), `synthetic_traits` |
 | `decorrelation.py` | `Decorrelation`: traits made uncorrelated on training individuals, in order |
 | `baselines.py` | PCA, genetic PCA, LDA, PCH (ridge), most heritable features |
 | `selection.py` | group folds; the H2-opt noise level of each trait (`select_noise_levels`, one-standard-error rule) and the PCH ridge (`PCH.tune`) by held-out heritability |
