@@ -1,10 +1,14 @@
 """Training synthetic traits to maximize heritability."""
 
+import copy
+
 import numpy as np
 import torch
+from torch.func import functional_call, stack_module_state, vmap
 
-from .decorrelation import Decorrelation, orthonormal_basis, residualize
+from .decorrelation import Decorrelation, orthonormal_basis
 from .heritability import AnovaDesign, anova_heritability
+from .models import LinearModel
 
 
 def synthetic_traits(model, X, is_train, traits=None):
@@ -17,13 +21,6 @@ def synthetic_traits(model, X, is_train, traits=None):
     with torch.no_grad():
         Y = model(torch.as_tensor(X, dtype=torch.float32, device=device), traits).cpu().numpy()
     return Decorrelation().fit(Y[np.asarray(is_train, bool)]).transform(Y)
-
-
-def _loss_traits(Y, basis, clip):
-    """Residual of Y on the earlier traits (basis), standardized and clipped to [-clip, clip]."""
-    Y = residualize(Y, basis)
-    Y = Y / torch.mean(Y ** 2, axis=0) ** 0.5
-    return Y if clip is None else torch.clamp(Y, -clip, clip)
 
 
 def _adam(parameters, learning_rate, n_iter):
@@ -39,10 +36,105 @@ def _rmsprop(parameters, learning_rate, n_iter):
 # The optimizer of one trait and its learning-rate schedule, by name.
 _OPTIMIZERS = {'adam': _adam, 'rmsprop': _rmsprop}
 
+# Noise draws of standard scale, by name: uniform in [0, 1) or standard normal.
+_NOISE = {'uniform': torch.rand, 'normal': torch.randn}
+
+
+def _bases(earlier, rows, device):
+    """(k, n, t) orthonormal bases of the earlier traits of k copies, each on its own training rows
+    ((k, n) boolean) and zero on the other rows, padded with zero columns to the largest number t
+    of earlier traits."""
+    t = max(np.asarray(E).shape[1] for E in earlier)
+    bases = torch.zeros((len(earlier), rows.shape[1], t), device=device)
+    for c, E in enumerate(earlier):
+        basis = orthonormal_basis(torch.as_tensor(np.asarray(E, dtype=np.float64)[rows[c]],
+                                                  device=device)).float()
+        bases[c, torch.as_tensor(rows[c], device=device), :basis.shape[1]] = basis
+    return bases
+
+
+def train_batch(models, X, groups, environment, train_rows, noise_levels, earlier=None,
+                n_iter=10000, optimizer='adam', learning_rate=1e-3, noise='normal', clip=None,
+                device='cpu'):
+    """Train one trait in each of several models at once; each copy is trained as by train.
+
+    models: B modules of one class, each mapping (n, m) measurements to an (n, 1) trait; they are
+    trained in place. train_rows: (B, n) boolean array, the training individuals of each copy.
+    noise_levels: length B, the noise level of each copy. earlier: None, or B arrays (n, t_b) with
+    the earlier traits of each copy for all individuals; in the loss, the trait of a copy is its
+    residual after least-squares regression on its earlier traits on its training rows.
+    All copies share each noise draw, scaled by their own noise level, so differences between
+    their noise levels are not confounded with the draw. The loss is the sum of the negative
+    heritabilities of the copies, and each copy's parameters get only its own gradient, so the
+    result does not depend on which copies are trained together. The other options are as in
+    train. Returns models.
+    """
+    if optimizer not in _OPTIMIZERS:
+        raise ValueError(f"optimizer must be 'adam' or 'rmsprop', not {optimizer!r}")
+    if noise not in _NOISE:
+        raise ValueError(f"noise must be 'uniform' or 'normal', not {noise!r}")
+    n_copies = len(models)
+    train_rows = np.asarray(train_rows, dtype=bool).reshape((n_copies, -1))
+    groups = np.asarray(groups)
+    environment = np.asarray(environment) if environment is not None else None
+    if earlier is None:
+        earlier = [np.zeros((len(groups), 0))] * n_copies
+    X = torch.as_tensor(np.asarray(X), dtype=torch.float32, device=device)
+    noise_levels = torch.as_tensor(np.asarray(noise_levels, dtype=np.float32), device=device)
+    draw = _NOISE[noise]
+
+    # only the individuals that some copy trains on take part
+    used = np.any(train_rows, axis=0)
+    train_rows = train_rows[:, used]
+    X = X[torch.as_tensor(used, device=device)]
+    design = AnovaDesign(groups[used], environment[used] if environment is not None else None,
+                         device, rows=train_rows.T)
+    # residuals and their scale are over all training rows; the heritability drops singleton groups
+    mask = torch.tensor(train_rows.T, dtype=torch.float32, device=device)
+    n_train = mask.sum(axis=0)
+    bases = _bases([np.asarray(E)[used] for E in earlier], train_rows, device)
+
+    for model in models:
+        model.to(device)
+    params, buffers = stack_module_state(models)
+    base = copy.deepcopy(models[0]).to('meta')
+
+    def forward(p, b, x):
+        return functional_call(base, (p, b), (x,))[:, 0]
+
+    def noisy_traits(Z):
+        """(n, B) outputs of the copies on X + level * Z."""
+        if isinstance(base, LinearModel):
+            # (X + level Z) w = X w + level (Z w): no noisy copy of X per copy
+            W = params['lin1.weight'][:, 0, :].T
+            return X @ W + (Z @ W) * noise_levels.reshape((1, -1)) + params['lin1.bias'].T
+        return vmap(forward)(params, buffers, X + Z * noise_levels.reshape((-1, 1, 1))).T
+
+    trait_optimizer, schedule = _OPTIMIZERS[optimizer](list(params.values()), learning_rate,
+                                                       n_iter)
+    for _ in range(n_iter):
+        Y = noisy_traits(draw(X.shape, device=device))
+        Y = (Y - (Y * mask).sum(axis=0) / n_train) * mask
+        Y = Y - torch.einsum('knt,kt->nk', bases, torch.einsum('knt,nk->kt', bases, Y))
+        Y = Y / ((Y ** 2 * mask).sum(axis=0) / n_train) ** 0.5
+        if clip is not None:
+            Y = torch.clamp(Y, -clip, clip)
+        loss = -torch.sum(design.heritability(Y))
+        trait_optimizer.zero_grad()
+        loss.backward()
+        trait_optimizer.step()
+        schedule.step()
+
+    with torch.no_grad():
+        for c, model in enumerate(models):
+            for name, parameter in model.named_parameters():
+                parameter.copy_(params[name][c])
+    return models
+
 
 def train(model, X, groups, environment, train_test, model_file=None, n_traits=1, first_trait=0,
           n_iter=10000, optimizer='adam', learning_rate=1e-3, noise_level=0.1, noise='uniform',
-          clip=None, penalty=None, device='cpu', verbose=True, print_every=100, save_every=1000):
+          clip=None, device='cpu', verbose=True):
     """Train synthetic traits one at a time to maximize their ANOVA heritability on training data.
 
     model: a TraitModels with at least n_traits traits; X: (n, m) measurements.
@@ -51,9 +143,10 @@ def train(model, X, groups, environment, train_test, model_file=None, n_traits=1
     already trained). In the loss, trait t is the residual of its output after least-squares
     regression on the outputs of traits 0..t-1 on the training individuals, so the test
     individuals never shape the objective. The final traits are
-    synthetic_traits(model, X, train_test == 0); with verbose, their train and test heritability
-    is printed every print_every steps.
-    Each step adds noise to the training measurements and maximizes the mean heritability.
+    synthetic_traits(model, X, train_test == 0); with verbose, the train and test heritability of
+    each trait is printed when it is trained.
+    Each step adds noise to the training measurements and maximizes the heritability.
+    noise_level is one level for all traits or one per trait (length n_traits).
     optimizer is 'adam' (the default: Adam with momentum 0.99, and a learning rate that decays from
     learning_rate to 0 on a cosine schedule over the n_iter steps of each trait) or 'rmsprop'
     (RMSprop with a constant learning rate, the paper's optimizer). The heritability does not
@@ -63,68 +156,36 @@ def train(model, X, groups, environment, train_test, model_file=None, n_traits=1
     (standard deviation noise_level, the paper's simulation setting). With clip, the standardized
     traits are clipped to [-clip, clip] in the loss (the paper's sorghum setting was 2); by
     default (None) the loss is the plain heritability, as in the paper's simulation.
-    penalty(trait_model, Y) is an optional regularization term added to the loss, given the model
-    of the current trait and its raw (n_train, 1) output on the noisy training data.
-    If model_file is given, the whole model is saved every save_every steps and after each trait.
+    If model_file is given, the whole model is saved after each trait. Each trait is trained by
+    train_batch.
     """
-    X = torch.tensor(X).float().to(device)
-    model.to(device)
     groups = np.asarray(groups)
-    environment = np.asarray(environment) if environment is not None else None
     train_test = np.asarray(train_test)
     is_train, is_test = train_test == 0, train_test == 1
-
-    def labels(rows):
-        return groups[rows], environment[rows] if environment is not None else None
-
-    if noise == 'uniform':
-        def draw_noise(shape):
-            return torch.rand(size=shape, device=device)
-    elif noise == 'normal':
-        def draw_noise(shape):
-            return torch.randn(size=shape, device=device)
-    else:
-        raise ValueError(f"noise must be 'uniform' or 'normal', not {noise!r}")
-    if optimizer not in _OPTIMIZERS:
-        raise ValueError(f"optimizer must be 'adam' or 'rmsprop', not {optimizer!r}")
-
-    train_design = AnovaDesign(*labels(is_train), device)
-    X_train_clean = X[is_train]
+    levels = np.broadcast_to(np.asarray(noise_level, dtype=float), (n_traits,))
+    x = torch.as_tensor(np.asarray(X), dtype=torch.float32, device=device)
+    model.to(device)
 
     for trait in range(first_trait, n_traits):
         with torch.no_grad():
-            earlier = model(X_train_clean, np.arange(trait)).double()
-        basis = orthonormal_basis(earlier).float()
-        trait_optimizer, schedule = _OPTIMIZERS[optimizer](model.parameters(), learning_rate,
-                                                           n_iter)
-
-        for step in range(n_iter):
-            X_train = X_train_clean + draw_noise(X_train_clean.shape) * noise_level
-
-            Y_raw = model(X_train, np.array([trait]))
-            Y = _loss_traits(Y_raw, basis, clip)
-            loss = -1 * torch.mean(train_design.heritability(Y))
-            if penalty is not None:
-                loss = loss + penalty(model.models[trait], Y_raw)
-
-            if verbose and step % print_every == 0:
-                Y = synthetic_traits(model, X, is_train, np.arange(trait + 1))[:, -1:]
-                message = f'trait {trait} step {step}: train heritability '
-                message += f'{anova_heritability(Y[is_train], *labels(is_train))}'
-                if np.any(is_test):
-                    message += ', test heritability '
-                    message += f'{anova_heritability(Y[is_test], *labels(is_test))}'
-                print(message)
-
-            trait_optimizer.zero_grad()
-            loss.backward()
-            trait_optimizer.step()
-            schedule.step()
-
-            if model_file is not None and step % save_every == 0:
-                torch.save(model, model_file)
-
+            earlier = model(x, np.arange(trait)).double().cpu().numpy()
+        train_batch([model.models[trait]], X, groups, environment, is_train[None], [levels[trait]],
+                    [earlier], n_iter=n_iter, optimizer=optimizer, learning_rate=learning_rate,
+                    noise=noise, clip=clip, device=device)
+        if verbose:
+            Y = synthetic_traits(model, X, is_train, np.arange(trait + 1))[:, -1:]
+            env = np.asarray(environment) if environment is not None else None
+            message = f'trait {trait}: train heritability '
+            message += f'{anova_heritability(Y[is_train], groups[is_train], _rows(env, is_train))}'
+            if np.any(is_test):
+                message += ', test heritability '
+                message += f'{anova_heritability(Y[is_test], groups[is_test], _rows(env, is_test))}'
+            print(message, flush=True)
         if model_file is not None:
             torch.save(model, model_file)
 
     return model
+
+
+def _rows(environment, rows):
+    return environment[rows] if environment is not None else None

@@ -1,6 +1,5 @@
 import numpy as np
 import pytest
-import torch
 
 import h2opt
 from h2opt import baselines, selection
@@ -46,27 +45,39 @@ def test_pch_tune_scores_held_out_heritability(sorghum):
     assert h2opt.selection.RIDGES[0] == pytest.approx(1e-4)
 
 
-def test_select_noise_level_scores_held_out_heritability_of_trait_1(sorghum):
+def test_select_noise_levels_chooses_one_level_per_trait_by_held_out_heritability(sorghum):
     X, groups, environment = sorghum
     X = X[:, ::20]
     levels = (0.0, 0.1)
+    chosen, scores = selection.select_noise_levels(lambda: h2opt.LinearModel(X.shape[1]), X,
+                                                   groups, environment, 2, levels=levels,
+                                                   n_splits=2, n_folds=3, n_iter=100)
+    assert chosen.shape == (1, 2) and scores.shape == (1, 2, 2, 2)
+    assert np.isfinite(scores).all()
+    for t in range(2):
+        assert chosen[0, t] == levels[selection.one_standard_error_choice(scores[0, t])]
+    assert selection.noise_scale(X) == pytest.approx(np.sqrt(X.var(axis=0).mean()))
+
+
+def test_select_noise_levels_on_subsets_ignores_the_other_individuals(sorghum):
+    # the selection on a subset is the same whether it runs alone or with another subset, and
+    # whatever the measurements outside the subset are (at level 0: with noise, the shared draw
+    # differs with the set of individuals)
+    X, groups, environment = sorghum
+    X = X[:, ::20]
+    subset = selection.group_folds(groups, 3) != 0
+    changed = X.copy()
+    changed[~subset] = np.random.RandomState(0).normal(size=changed[~subset].shape)
+    options = dict(levels=(0.0,), n_splits=2, n_folds=3, n_iter=100)
 
     def make_model():
-        return h2opt.TraitModels(1, h2opt.LinearModel, X.shape[1])
+        return h2opt.LinearModel(X.shape[1])
 
-    level, scores = selection.select_noise_level(make_model, X, groups, environment, levels,
-                                                 n_splits=1, n_folds=3, n_iter=200)
-    assert scores.shape == (1, 2) and level == levels[int(np.argmax(scores[0]))]  # one split
-    assert selection.noise_scale(X) == pytest.approx(np.sqrt(X.var(axis=0).mean()))
-    # the score of level 0.1 on split 0, by hand
-    is_val = selection.group_folds(groups, 3) == 0
-    torch.manual_seed(0)
-    model = make_model()
-    h2opt.train(model, X, groups, environment, is_val.astype(int), n_iter=200,
-                noise_level=0.1 * selection.noise_scale(X), noise='normal', verbose=False)
-    trait = h2opt.synthetic_traits(model, X, ~is_val)
-    expected = h2opt.anova_heritability(trait[is_val], groups[is_val], environment[is_val])[0]
-    assert scores[0, 1] == pytest.approx(expected)
+    _, together = selection.select_noise_levels(make_model, X, groups, environment, 1,
+                                                [subset, ~subset], **options)
+    _, alone = selection.select_noise_levels(make_model, changed, groups, environment, 1,
+                                             [subset], **options)
+    np.testing.assert_allclose(together[0], alone[0], atol=1e-4)
 
 
 def test_one_standard_error_choice_takes_the_strongest_setting_near_the_best():

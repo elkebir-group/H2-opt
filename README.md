@@ -85,27 +85,34 @@ traits = synthetic_traits(model, X, train_test == 0)
 Each step adds random noise to the training measurements (data augmentation), which regularizes the traits.
 For a linear trait, noise with standard deviation s has the same effect as a ridge penalty s^2 |w|^2 in the denominator of the heritability, so the trained trait 1 is the trait 1 of `PCH` with ridge s^2 / v (v: the mean variance of the measurements).
 
-Options: `n_iter` steps per trait (default 10000); `optimizer`, `'adam'` (default) or `'rmsprop'`; `learning_rate` (default 1e-3); `noise_level` for data augmentation (default 0.1): the maximum of the uniform noise added to the measurements at each step, or its standard deviation with `noise='normal'`; `clip` to clip the standardized traits in the loss to [-clip, clip] (default `None`: no clipping, so the loss is the plain heritability; the paper clipped sorghum at 2); `model_file` to save the model every `save_every` steps (default 1000) and after each trait; and `device` (e.g. `"cuda"`) to train on a GPU.
-`'adam'` uses momentum 0.99 and decays the learning rate to 0 on a cosine schedule over the `n_iter` steps of each trait, so a model saved before the end of a trait is not fully trained.
+Options: `n_iter` steps per trait (default 10000); `optimizer`, `'adam'` (default) or `'rmsprop'`; `learning_rate` (default 1e-3); `noise_level` for data augmentation (default 0.1), one level for all traits or one per trait: the maximum of the uniform noise added to the measurements at each step, or its standard deviation with `noise='normal'`; `clip` to clip the standardized traits in the loss to [-clip, clip] (default `None`: no clipping, so the loss is the plain heritability; the paper clipped sorghum at 2); `model_file` to save the model after each trait; and `device` (e.g. `"cuda"`) to train on a GPU.
+`'adam'` uses momentum 0.99 and decays the learning rate to 0 on a cosine schedule over the `n_iter` steps of each trait.
 `'rmsprop'` is the optimizer of the paper (constant learning rate). It converges slowly when the measurements are strongly correlated: the heritability does not change with the scale of a trait, so its steps shrink relative to the weights as the weights grow.
 `ConvModel` is a convolutional alternative to `LinearModel` for spectra.
 
+`train_batch` trains one trait in each of many models at once, each with its own training individuals, noise level and earlier traits; `train` uses it for each trait.
+The copies share each noise draw, scaled by their own level, and each copy gets only its own gradient.
+For `LinearModel` it is fast, because (X + noise) w = X w + noise w needs no noisy copy of X per model: on an RTX 3080, 400 sorghum-sized linear models train at about 190,000 model-steps per second, against about 900 for one model.
+Other models are trained with `torch.func.vmap`, which gives no speedup for `ConvModel`.
+
 ### Choosing the noise level
 
-`select_noise_level` chooses the noise level from the data. For each level, it trains the first trait on part of the groups and scores its heritability on the held-out groups.
+`select_noise_levels` chooses one noise level per trait from the data. For each trait in order and each level, it trains the trait on part of the groups, on top of the earlier traits chosen for that split, and scores its heritability on the held-out groups.
 Each level is the standard deviation of normal noise as a fraction of `noise_scale(X)`, the root mean variance of the measurements, so the same levels apply to data on any scale.
 
 ```python
-from h2opt.selection import noise_scale, select_noise_level
+from h2opt.selection import noise_scale, select_noise_levels
 
-level, scores = select_noise_level(lambda: TraitModels(1, LinearModel, X.shape[1]),
-                                   X, groups, environment, n_iter=10000)
+is_train = train_test == 0
+levels, scores = select_noise_levels(lambda: LinearModel(X.shape[1]), X, groups, environment,
+                                     n_traits, subsets=[is_train], n_iter=10000)
 train(model, X, groups, environment, train_test, n_traits=n_traits,
-      noise_level=level * noise_scale(X), noise='normal')
+      noise_level=levels[0] * noise_scale(X[is_train]), noise='normal')
 ```
 
-The groups are split into 5 folds, and each fold is the held-out groups of one validation split (`n_folds`; `n_splits` uses only the first folds).
-The levels are `NOISE_LEVELS` (0 to 3). The held-out heritability changes little between levels, so the chosen level is the largest one whose mean score is within one standard error of the best (`one_standard_error_choice`): the strongest regularization that the validation cannot tell apart from the best.
+Within each subset of the individuals (`subsets`, e.g. the training individuals of several outer folds, all chosen in one batch), the groups are split into 5 folds, and each fold is the held-out groups of one validation split (`n_folds`; `n_splits` uses only the first folds).
+The levels are `NOISE_LEVELS` (0 to 3). The held-out heritability often changes little between levels, so the chosen level is the largest one whose mean score is within one standard error of the best (`one_standard_error_choice`): the strongest regularization that the validation cannot tell apart from the best.
+All subsets, splits and levels of a trait are trained together by `train_batch`.
 
 ## Baselines
 

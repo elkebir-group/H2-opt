@@ -1,3 +1,5 @@
+import copy
+
 import numpy as np
 import pytest
 import torch
@@ -96,3 +98,55 @@ def test_rmsprop_and_unknown_optimizer(sorghum):
     with pytest.raises(ValueError):
         h2opt.train(model, X, groups, environment, np.zeros(len(groups), dtype=int), n_iter=1,
                     optimizer='sgd', verbose=False)
+
+
+def test_train_batch_copies_with_shared_rows_train_as_alone(sorghum):
+    # copies with the same training rows share each noise draw; each gets only its own gradient
+    X, groups, environment = sorghum
+    X = X[:, ::20]
+    rows = np.random.RandomState(0).randint(4, size=len(groups)) != 0
+    earlier = np.random.RandomState(1).normal(size=(len(groups), 1))
+    torch.manual_seed(0)
+    start = h2opt.LinearModel(X.shape[1])
+    levels = [0.0, 0.002]
+
+    def outputs(models):
+        with torch.no_grad():
+            return [m(torch.tensor(X).float())[:, 0].numpy() for m in models]
+
+    together = [copy.deepcopy(start) for _ in levels]
+    torch.manual_seed(1)
+    h2opt.train_batch(together, X, groups, environment, [rows, rows], levels, [earlier, earlier],
+                      n_iter=300)
+    for a, level in enumerate(levels):
+        alone = copy.deepcopy(start)
+        torch.manual_seed(1)
+        h2opt.train_batch([alone], X, groups, environment, [rows], [level], [earlier], n_iter=300)
+        assert abs(np.corrcoef(outputs(together)[a], outputs([alone])[0])[0, 1]) > 0.9999
+    # the two levels give different traits
+    assert abs(np.corrcoef(*outputs(together))[0, 1]) < 0.9999
+
+
+def test_train_takes_one_noise_level_per_trait(sorghum):
+    X, groups, environment = sorghum
+    X = X[:, ::20]
+    model = h2opt.TraitModels(2, h2opt.LinearModel, X.shape[1])
+    h2opt.train(model, X, groups, environment, np.zeros(len(groups), dtype=int), n_traits=2,
+                n_iter=5, noise_level=[0.0, 0.01], noise='normal', verbose=False)
+    with pytest.raises(ValueError):
+        h2opt.train(model, X, groups, environment, np.zeros(len(groups), dtype=int), n_traits=2,
+                    n_iter=1, noise_level=[0.0, 0.01, 0.1], verbose=False)
+
+
+def test_train_batch_linear_model_matches_the_generic_path(sorghum):
+    # LinearModel takes a shortcut, (X + level Z) w = X w + level (Z w); a plain nn.Linear does not
+    X, groups, environment = sorghum
+    X = X[:, ::20]
+    rows = np.random.RandomState(0).randint(4, size=len(groups)) != 0
+    torch.manual_seed(0)
+    linear = h2opt.LinearModel(X.shape[1])
+    plain = copy.deepcopy(linear.lin1)
+    for model in (linear, plain):
+        torch.manual_seed(1)
+        h2opt.train_batch([model], X, groups, environment, [rows], [0.002], n_iter=100)
+    torch.testing.assert_close(linear.lin1.weight, plain.weight, rtol=0, atol=1e-5)

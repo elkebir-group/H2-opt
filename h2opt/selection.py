@@ -1,17 +1,20 @@
 """Choosing a regularization strength by heritability on held-out groups.
 
-H2-opt's noise level (select_noise_level) is the largest one whose first trait has a held-out
-heritability within one standard error of the best, over validation folds of the groups. PCH
-penalizes ridge * v * |w|^2 (v the mean variance of the measurements); its ridge (PCH.tune,
-through cross_validate) has the highest mean held-out heritability. Also the assignment of groups
-to folds.
+H2-opt's noise levels (select_noise_levels), one per trait: for each trait in order, the largest
+level whose trait has a held-out heritability within one standard error of the best, over
+validation folds of the groups. PCH penalizes ridge * v * |w|^2 (v the mean variance of the
+measurements); its ridge (PCH.tune, through cross_validate) has the highest mean held-out
+heritability. Also the assignment of groups to folds.
 """
+
+import copy
 
 import numpy as np
 import torch
 
+from .decorrelation import Decorrelation
 from .heritability import _as_environment, anova_heritability
-from .train import synthetic_traits, train
+from .train import train_batch
 
 # Noise levels of H2-opt: the standard deviation of the normal input noise as a fraction of
 # noise_scale(X), the typical spread of a measurement.
@@ -73,33 +76,67 @@ def one_standard_error_choice(scores):
     return int(np.flatnonzero(mean >= mean[best] - se)[-1])
 
 
-def select_noise_level(make_model, X, groups, environment, levels=NOISE_LEVELS, n_splits=5,
-                       n_folds=5, seed=0, **train_options):
-    """Noise level of H2-opt by the held-out heritability of the first trait.
+def select_noise_levels(make_model, X, groups, environment, n_traits, subsets=None,
+                        levels=NOISE_LEVELS, n_splits=5, n_folds=5, seed=0, **train_options):
+    """Noise level of each H2-opt trait by its held-out heritability.
 
-    The groups are assigned to n_folds folds (group_folds); for each of the first n_splits folds
-    (default: all), a fresh model (make_model(), a TraitModels) is trained on the other folds with
-    normal noise of standard deviation level * noise_scale(X), for each level, and its first trait
-    is scored by its ANOVA heritability on the held-out fold. train_options go to train (e.g.
-    n_iter, clip, device). The levels must increase; the chosen level is the largest one within
-    one standard error of the best mean score (one_standard_error_choice), because the scores
-    change little between levels and more noise is the stronger regularization.
-    Returns (the chosen level, (n_splits, n_levels) scores).
+    One selection runs on each subset of the individuals (subsets: (k, n) boolean, e.g. the
+    training individuals of k outer folds; default: one selection on all). Within a subset, the
+    groups are assigned to n_folds folds (group_folds); each of the first n_splits folds (default:
+    all) is the held-out fold of one validation split. Traits are chosen in order. For trait t, in
+    each split, a fresh model (make_model(), a module mapping (n, m) to (n, 1)) is trained on the
+    other folds for each level, with normal noise of standard deviation level * noise_scale(X)
+    (X of the subset), on top of traits 0..t-1 of that split (in the loss, the trait is its
+    residual on them, as in train). Its score is the ANOVA heritability on the held-out fold of
+    the trait made uncorrelated with traits 0..t-1 on the training folds (Decorrelation, as in
+    synthetic_traits). The levels must increase; the chosen level is the largest one within one
+    standard error of the best mean score (one_standard_error_choice), because the scores often
+    change little between levels and more noise is the stronger regularization. Each split then
+    keeps its trait t trained at the chosen level. All subsets, splits and levels of one trait are
+    trained together by train_batch; train_options go to it (e.g. n_iter, device).
+    Returns (the chosen levels (k, n_traits), (k, n_traits, n_splits, n_levels) scores).
     """
     X = np.asarray(X)
     groups = np.asarray(groups)
     environment = _as_environment(environment, len(groups))
-    fold = group_folds(groups, n_folds, seed)
-    scale = noise_scale(X)
-    scores = np.zeros((n_splits, len(levels)))
-    for split in range(n_splits):
-        is_val = fold == split
-        for a, level in enumerate(levels):
-            torch.manual_seed(seed)
-            model = make_model()
-            train(model, X, groups, environment, is_val.astype(int), n_traits=1,
-                  noise_level=level * scale, noise='normal', verbose=False, **train_options)
-            Y = synthetic_traits(model, X, ~is_val, [0])
-            scores[split, a] = anova_heritability(Y[is_val], groups[is_val],
-                                                  environment[is_val])[0]
-    return levels[one_standard_error_choice(scores)], scores
+    subsets = np.ones((1, len(groups)), dtype=bool) if subsets is None else np.asarray(subsets)
+    n_subsets = len(subsets)
+    # (subset, split) pairs: training and held-out individuals of each validation split
+    fit, held_out, scale = [], [], []
+    for subset in subsets:
+        fold = np.full(len(groups), -1)
+        fold[subset] = group_folds(groups[subset], n_folds, seed)
+        for split in range(n_splits):
+            fit.append(subset & (fold != split))
+            held_out.append(fold == split)
+        scale.append(noise_scale(X[subset]))
+    pairs = [(i, split) for i in range(n_subsets) for split in range(n_splits)]
+    copies = [(p, a) for p in range(len(pairs)) for a in range(len(levels))]
+    x = torch.as_tensor(X, dtype=torch.float32)
+    earlier = [np.zeros((len(groups), 0)) for _ in pairs]
+    chosen = np.zeros((n_subsets, n_traits))
+    scores = np.zeros((n_subsets, n_traits, n_splits, len(levels)))
+    for t in range(n_traits):
+        torch.manual_seed(seed + t)
+        start = make_model()
+        models = [copy.deepcopy(start) for _ in copies]
+        train_batch(models, X, groups, environment, [fit[p] for p, _ in copies],
+                    [levels[a] * scale[pairs[p][0]] for p, a in copies],
+                    [earlier[p] for p, _ in copies], noise='normal', **train_options)
+        outputs = {}
+        for model, (p, a) in zip(models, copies, strict=False):
+            model.cpu()
+            with torch.no_grad():
+                outputs[p, a] = model(x)[:, 0].double().numpy()
+            Y = np.column_stack([earlier[p], outputs[p, a]])
+            trait = Decorrelation().fit(Y[fit[p]]).transform(Y)[:, -1:]
+            i, split = pairs[p]
+            scores[i, t, split, a] = anova_heritability(trait[held_out[p]], groups[held_out[p]],
+                                                        environment[held_out[p]])[0]
+        for i in range(n_subsets):
+            a = one_standard_error_choice(scores[i, t])
+            chosen[i, t] = levels[a]
+            for p, (j, _) in enumerate(pairs):
+                if j == i:
+                    earlier[p] = np.column_stack([earlier[p], outputs[p, a]])
+    return chosen, scores

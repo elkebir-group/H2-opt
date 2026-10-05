@@ -13,7 +13,7 @@ from .heritability import (
 from .io import load_npz
 from .models import AutoEncoder, ConvModel, LinearModel, TraitModels
 from .simulate import encode_latent, latent_scale
-from .train import synthetic_traits, train
+from .train import synthetic_traits, train, train_batch
 
 __all__ = [
     "AnovaDesign",
@@ -34,4 +34,5 @@ __all__ = [
     "remove_environment",
     "synthetic_traits",
     "train",
+    "train_batch",
 ]
