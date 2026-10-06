@@ -13,7 +13,7 @@ import numpy as np
 import torch
 
 from .decorrelation import Decorrelation
-from .heritability import _as_environment, anova_heritability
+from .heritability import _as_environment, heritability
 from .train import train_batch
 
 # Ridges of PCH; ridge 1 is the penalty of input noise with the standard deviation of a typical
@@ -57,7 +57,8 @@ def noise_scale(X):
 
 
 def select_noise_level(make_model, X, groups, environment, n_traits, subsets=None,
-                       levels=NOISE_LEVELS, n_splits=5, n_folds=5, seed=0, **train_options):
+                       levels=NOISE_LEVELS, n_splits=5, n_folds=5, seed=0, subgroups=None,
+                       estimator='anova', **train_options):
     """Noise level of H2-opt, one for all traits, by the held-out heritability of the traits.
 
     One selection runs on each subset of the individuals (subsets: (k, n) boolean, e.g. the
@@ -65,54 +66,69 @@ def select_noise_level(make_model, X, groups, environment, n_traits, subsets=Non
     groups are assigned to n_folds folds (group_folds); each of the first n_splits folds (default:
     all) is the held-out fold of one validation split. In each split and for each level, traits
     0..n_traits-1 are trained in order on the other folds, as in train: a fresh model per trait
-    (make_model(), a module mapping (n, m) to (n, 1)), normal noise of standard deviation
-    level * noise_scale(X) (X of the subset), in the loss the trait's residual on the earlier
-    traits of the same split and level. The score of a trait is the ANOVA heritability on the
-    held-out fold of the trait made uncorrelated with the earlier traits on the training folds
-    (Decorrelation, as in synthetic_traits). The chosen level has the best score averaged over the
-    traits and splits, as for the PCH ridge (PCH.tune). All subsets, splits and levels of one
-    trait are trained together by train_batch; train_options go to it (e.g. n_iter, device).
+    (make_model(), a module mapping the measurements of n individuals to (n, 1)), normal noise of
+    standard deviation level * noise_scale(X) (X of the subset), in the loss the trait's residual
+    on the earlier traits of the same split and level. The score of a trait is its heritability
+    (estimator and subgroups as in train) on the held-out fold, after it is made uncorrelated with
+    the earlier traits on the training folds (Decorrelation, as in synthetic_traits). The chosen
+    level has the best score averaged over the traits and splits, as for the PCH ridge
+    (PCH.tune). X is one array of measurements (first axis: individuals), or a list of arrays of
+    the same individuals (e.g. one per date): then every set is trained and scored, and one level
+    serves all sets by their mean score, as in PCH.tune. All subsets, splits and levels of one
+    trait (and set) are trained together by train_batch; train_options go to it (e.g. n_iter,
+    device, max_copies).
     Returns (the chosen level of each subset (k,), (k, n_traits, n_splits, n_levels) scores, and
     the trained traits before decorrelation, (k, n_traits, n_splits, n_levels, n) float32, on all
-    n individuals). The traits of a level do not depend on the other levels, so the traits and
-    scores give the choice of any other rule over the levels without training again.
+    n individuals); with a list of sets, scores and traits have a set axis after the first. The
+    traits of a level do not depend on the other levels, so the traits and scores give the choice
+    of any other rule over the levels without training again.
     """
-    X = np.asarray(X)
+    sets = X if isinstance(X, list | tuple) else [X]
     groups = np.asarray(groups)
     environment = _as_environment(environment, len(groups))
+    subgroups = None if subgroups is None else np.asarray(subgroups)
     subsets = np.ones((1, len(groups)), dtype=bool) if subsets is None else np.asarray(subsets)
     n_subsets = len(subsets)
     # copies: (subset, split, level), with the training and held-out individuals of the split
-    copies, fit, held_out, sd = [], [], [], []
+    copies, fit, held_out = [], [], []
     for i, subset in enumerate(subsets):
         fold = np.full(len(groups), -1)
         fold[subset] = group_folds(groups[subset], n_folds, seed)
-        scale = noise_scale(X[subset])
         for split in range(n_splits):
-            for a, level in enumerate(levels):
+            for a in range(len(levels)):
                 copies.append((i, split, a))
                 fit.append(subset & (fold != split))
                 held_out.append(fold == split)
-                sd.append(level * scale)
-    x = torch.as_tensor(X, dtype=torch.float32)
-    earlier = [np.zeros((len(groups), 0)) for _ in copies]
-    scores = np.zeros((n_subsets, n_traits, n_splits, len(levels)))
-    traits = np.zeros((n_subsets, n_traits, n_splits, len(levels), len(groups)), dtype=np.float32)
-    for t in range(n_traits):
-        torch.manual_seed(seed + t)
-        start = make_model()
-        models = [copy.deepcopy(start) for _ in copies]
-        train_batch(models, X, groups, environment, fit, sd, earlier, noise='normal',
-                    **train_options)
-        for c, (model, (i, split, a)) in enumerate(zip(models, copies, strict=True)):
-            model.cpu()
-            with torch.no_grad():
-                output = model(x)[:, 0].double().numpy()
-            traits[i, t, split, a] = output
-            earlier[c] = np.column_stack([earlier[c], output])
-            trait = Decorrelation().fit(earlier[c][fit[c]]).transform(earlier[c])[:, -1:]
-            scores[i, t, split, a] = anova_heritability(trait[held_out[c]], groups[held_out[c]],
-                                                        environment[held_out[c]])[0]
-    chosen = np.array([levels[int(np.argmax(scores[i].mean(axis=(0, 1))))]
+    shape = (n_subsets, len(sets), n_traits, n_splits, len(levels))
+    scores = np.zeros(shape)
+    traits = np.zeros(shape + (len(groups),), dtype=np.float32)
+    for k, measurements in enumerate(sets):
+        measurements = np.asarray(measurements)
+        x = torch.as_tensor(measurements, dtype=torch.float32)
+        scale = [noise_scale(measurements[subset].reshape((subset.sum(), -1)))
+                 for subset in subsets]
+        sd = [levels[a] * scale[i] for i, _, a in copies]
+        earlier = [np.zeros((len(groups), 0)) for _ in copies]
+        for t in range(n_traits):
+            torch.manual_seed(seed + t)
+            start = make_model()
+            models = [copy.deepcopy(start) for _ in copies]
+            train_batch(models, measurements, groups, environment, fit, sd, earlier,
+                        noise='normal', subgroups=subgroups, estimator=estimator,
+                        **train_options)
+            for c, (model, (i, split, a)) in enumerate(zip(models, copies, strict=True)):
+                model.cpu()
+                with torch.no_grad():
+                    output = model(x)[:, 0].double().numpy()
+                traits[i, k, t, split, a] = output
+                earlier[c] = np.column_stack([earlier[c], output])
+                trait = Decorrelation().fit(earlier[c][fit[c]]).transform(earlier[c])[:, -1:]
+                rows = held_out[c]
+                scores[i, k, t, split, a] = heritability(
+                    trait[rows], groups[rows], environment[rows],
+                    None if subgroups is None else subgroups[rows], estimator)[0]
+    chosen = np.array([levels[int(np.argmax(scores[i].mean(axis=(0, 1, 2))))]
                        for i in range(n_subsets)])
+    if not isinstance(X, list | tuple):
+        scores, traits = scores[:, 0], traits[:, 0]
     return chosen, scores, traits

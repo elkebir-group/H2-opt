@@ -87,13 +87,14 @@ Each step adds random noise to the training measurements (data augmentation), wh
 For a linear trait, noise with standard deviation s has the same effect as a ridge penalty s^2 |w|^2 in the denominator of the heritability, so the trained trait 1 is the trait 1 of `PCH` with ridge s^2 / v (v: the mean variance of the measurements).
 
 Options: `n_iter` steps per trait (default 10000); `optimizer`, `'adam'` (default) or `'rmsprop'`; `learning_rate` (default 1e-3); `noise_level` for data augmentation (default 0.1), one level for all traits or one per trait: the maximum of the uniform noise added to the measurements at each step, or its standard deviation with `noise='normal'`; `clip` to clip the standardized traits in the loss to [-clip, clip] (default `None`: no clipping, so the loss is the plain heritability; the paper clipped sorghum at 2); `model_file` to save the model after each trait; and `device` (e.g. `"cuda"`) to train on a GPU.
+`estimator` chooses the heritability that is optimized and reported: `'anova'` (default, `anova_heritability`) or `'henderson3'` (`Henderson3`, with `subgroups`, e.g. plots of one family).
 `'adam'` uses momentum 0.99 and decays the learning rate to 0 on a cosine schedule over the `n_iter` steps of each trait.
 `'rmsprop'` is the optimizer of the paper (constant learning rate). It converges slowly when the measurements are strongly correlated: the heritability does not change with the scale of a trait, so its steps shrink relative to the weights as the weights grow.
 `ConvModel` is a convolutional alternative to `LinearModel` for spectra.
 
 `train_batch` trains one trait in each of many models at once, each with its own training individuals, noise level and earlier traits.
 `train_models` trains several `TraitModels` at once on it, each with its own `train_test` and noise levels (e.g. the outer folds of a dataset, or one model per noise level); `train` is `train_models` with one model.
-The copies share each noise draw, scaled by their own level, and each copy gets only its own gradient.
+The copies share each noise draw, scaled by their own level, and each copy gets only its own gradient. `max_copies` trains at most that many copies at once, for models too large to train all copies together on a GPU.
 For `LinearModel` it is fast, because (X + noise) w = X w + noise w needs no noisy copy of X per model, and with normal noise each model's noise w is drawn directly (normal with standard deviation |w| per individual).
 On a GPU, one step is recorded as a CUDA graph and replayed, which removes the cost of launching its many small kernels.
 On an RTX 3080, one sorghum-sized linear model trains at about 2,500 steps per second, and 400 at about 210,000 model-steps per second.
@@ -117,6 +118,7 @@ train(model, X, groups, environment, train_test, n_traits=n_traits,
 Within each subset of the individuals (`subsets`, e.g. the training individuals of several outer folds, all chosen in one batch), the groups are split into 5 folds, and each fold is the held-out groups of one validation split (`n_folds`; `n_splits` uses only the first folds).
 The levels are `NOISE_LEVELS` (0.001 to 10), the square roots of the PCH ridges `RIDGES`, so that level s has the penalty of ridge s^2. The chosen level has the best held-out heritability averaged over the traits and splits, the same rule as `PCH.tune`.
 All subsets, splits and levels of a trait are trained together by `train_batch`.
+Given a list of measurement sets of the same individuals (e.g. one per date), it trains and scores each set and chooses one level for all of them by their mean score, as `PCH.tune` chooses one ridge.
 `select_noise_level` also returns the scores of each trait and the trained validation traits (before decorrelation) for each subset, trait, split and level. The traits of a level do not depend on the other levels, so another rule over the levels can be examined without training again.
 
 ## Baselines

@@ -54,9 +54,11 @@ extend-ignore-names = [
     "X", "Y", "Z", "N", "H",
     # Linear-algebra factors and generic matrices (SVD U/V/Vt, Gram/covariance
     # A/B/C/D/E/G/Q/R/W).
-    "A", "B", "C", "D", "E", "G", "Q", "R", "U", "V", "Vt", "W",
+    "A", "B", "C", "D", "E", "G", "P", "Q", "R", "U", "V", "Vt", "W",
+    # Inverse of the matrix C of expected quadratic forms (Henderson3).
+    "Cinv",
     # Centered, sorted, squared and per-group variants of X, Y and Z.
-    "Xc", "X_fit", "X_train", "X_train_clean",
+    "Xc", "Ys", "X_fit", "X_train", "X_train_clean",
     "Y2", "Y_copy", "Y_cumsum", "Y_raw", "Y_sorted", "Y_sq_cumsum",
     "Zc", "Ze", "Zi", "ZZ",
     # Variance components of Y and N.

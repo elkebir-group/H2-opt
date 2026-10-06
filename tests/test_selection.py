@@ -97,3 +97,21 @@ def test_pch_tune_on_several_measurement_sets_averages_their_scores(sorghum):
     _, first, _ = baselines.PCH.tune(first_set, groups, environment, 1, **options)
     _, second, _ = baselines.PCH.tune(second_set, groups, environment, 1, **options)
     np.testing.assert_allclose(both, (first + second) / 2, rtol=1e-10)
+
+
+def test_select_noise_level_on_several_measurement_sets_averages_their_scores(sorghum):
+    X, groups, environment = sorghum
+    first_set, second_set = X[:, ::20], X[:, 5::20]
+    options = dict(levels=(0.0, 0.1), n_splits=2, n_folds=3, n_iter=50,
+                   subgroups=np.arange(len(groups)) % 2, estimator='henderson3')
+
+    def make_model():
+        return h2opt.LinearModel(first_set.shape[1])
+
+    chosen, both, traits = selection.select_noise_level(make_model, [first_set, second_set],
+                                                        groups, environment, 1, **options)
+    _, first, _ = selection.select_noise_level(make_model, first_set, groups, environment, 1,
+                                               **options)
+    assert both.shape == (1, 2, 1, 2, 2) and traits.shape == (1, 2, 1, 2, 2, len(groups))
+    np.testing.assert_allclose(both[:, 0], first, atol=1e-4)
+    assert chosen[0] == options['levels'][int(np.argmax(both[0].mean(axis=(0, 1, 2))))]

@@ -81,6 +81,39 @@ def test_adam_reaches_the_pch_trait(sorghum):
     assert abs(np.corrcoef(trait, pch.transform(X)[:, 0])[0, 1]) > 0.9999
 
 
+def test_adam_reaches_the_henderson3_pch_trait(sorghum):
+    # the same with Henderson's Method III: its group variance is unbiased, so pure noise adds
+    # nothing to it in expectation, and the noise acts as a ridge in the denominator
+    X, groups, environment = sorghum
+    X = X[:, ::20]
+    subgroups = np.arange(len(groups)) % 2
+    s = 0.0014
+    pch = h2opt.baselines.PCH(1, ridge=s ** 2 / X.var(axis=0).mean(), estimator='henderson3')
+    pch.fit(X, groups, environment, subgroups)
+    torch.manual_seed(0)
+    model = h2opt.TraitModels(1, h2opt.LinearModel, X.shape[1])
+    h2opt.train(model, X, groups, environment, np.zeros(len(groups), dtype=int), n_iter=10000,
+                noise_level=s, noise='normal', verbose=False, subgroups=subgroups,
+                estimator='henderson3')
+    trait = h2opt.synthetic_traits(model, X, np.ones(len(groups), dtype=bool))[:, 0]
+    assert abs(np.corrcoef(trait, pch.transform(X)[:, 0])[0, 1]) > 0.9999
+
+
+def test_train_batch_in_chunks_trains_each_copy_as_together(sorghum):
+    X, groups, environment = sorghum
+    X = X[:, ::20]
+    rows = np.random.RandomState(0).rand(3, len(groups)) < 0.8
+    torch.manual_seed(0)
+    start = h2opt.LinearModel(X.shape[1])
+    together = [copy.deepcopy(start) for _ in range(3)]
+    chunked = [copy.deepcopy(start) for _ in range(3)]
+    options = dict(n_iter=50, subgroups=np.arange(len(groups)) % 2, estimator='henderson3')
+    h2opt.train_batch(together, X, groups, environment, rows, [0, 0, 0], **options)
+    h2opt.train_batch(chunked, X, groups, environment, rows, [0, 0, 0], max_copies=2, **options)
+    for a, b in zip(together, chunked, strict=True):
+        torch.testing.assert_close(a.lin1.weight, b.lin1.weight, atol=1e-5, rtol=1e-4)
+
+
 def test_rmsprop_and_unknown_optimizer(sorghum):
     X, groups, environment = sorghum
     X = X[:, ::20]

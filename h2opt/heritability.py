@@ -185,11 +185,10 @@ def _dummies(labels, drop_first=False):
     return D[:, 1:] if drop_first else D
 
 
-def _projection(X):
-    """Orthogonal projection onto the column space of X (rank-deficient X allowed)."""
+def _range_basis(X):
+    """Orthonormal basis of the column space of X (rank-deficient X allowed)."""
     U, s, _ = np.linalg.svd(X, full_matrices=False)
-    U = U[:, s > s[0] * 1e-10]
-    return U @ U.T
+    return U[:, s > s[0] * 1e-10]
 
 
 class Henderson3:
@@ -201,49 +200,88 @@ class Henderson3:
     environment: (n, g) categorical environmental variables (fixed effects), or None.
     subgroups: optional length-n labels of units nested in groups that share a non-genetic effect
     (e.g. plots of one family); labels only need to be unique within a group.
+    rows: optional (n, k) boolean array; as in AnovaDesign, column j of Y is then a trait of the
+    individuals where column j of rows is true (the other entries are ignored).
 
     With P(.) the projection onto the column space of the given design matrices,
         Q_group    = P(env, group) - P(env)
         Q_subgroup = P(env, group, subgroup) - P(env, group)
         Q_residual = I - P(env, group, subgroup)
     and E[y'Q y] is linear in the variance components, which gives unbiased estimates however
-    environment and groups are confounded. The (n, n) forms are computed once per design, so this
-    suits a fixed set of individuals; heritability(Y) is then differentiable in Y.
+    environment and groups are confounded. Each projection is kept as an orthonormal basis U of
+    its range (y'P y = |U'y|^2), computed once per set of rows; heritability(Y) is then
+    differentiable in Y.
     """
 
-    def __init__(self, groups, environment=None, subgroups=None, device='cpu'):
+    def __init__(self, groups, environment=None, subgroups=None, device='cpu', rows=None):
         groups = np.asarray(groups).astype(str)
         n = len(groups)
         environment = _as_environment(environment, n)
-        env_dummies = [_dummies(environment[:, a], True) for a in range(environment.shape[1])]
-        E = np.concatenate([np.ones((n, 1))] + env_dummies, 1)
-        Z = [_dummies(groups)]
         if subgroups is not None:
-            subgroup_labels = np.char.add(np.char.add(groups, '|'),
-                                          np.asarray(subgroups).astype(str))
-            Z.append(_dummies(subgroup_labels))
+            subgroups = np.char.add(np.char.add(groups, '|'), np.asarray(subgroups).astype(str))
+        rows = np.ones((n, 1), dtype=bool) if rows is None else np.asarray(rows, dtype=bool)
+        # one decomposition per distinct set of rows
+        row_sets, self._set_of_column = np.unique(rows.T, axis=0, return_inverse=True)
+        self._set_of_column = self._set_of_column.reshape(-1)
+        decompositions = [self._decompose(groups[r], environment[r],
+                                          None if subgroups is None else subgroups[r])
+                          for r in row_sets]
+        self.n_components = decompositions[0][1].shape[0]
+        self._sets = []
+        for s, (r, (bases, Cinv)) in enumerate(zip(row_sets, decompositions, strict=True)):
+            padded = []
+            for U in bases:
+                full = np.zeros((n, U.shape[1]))
+                full[r] = U
+                padded.append(torch.tensor(full, device=device, dtype=torch.float64))
+            columns = torch.tensor(np.flatnonzero(self._set_of_column == s), device=device)
+            self._sets.append((torch.tensor(r, device=device, dtype=torch.float64), padded,
+                               torch.tensor(Cinv, device=device, dtype=torch.float64), columns))
+        # with rows, the columns of Y are fixed; without, any number of columns uses all rows
+        self._mask = (torch.tensor(rows, device=device, dtype=torch.float64)
+                      if rows.shape[1] > 1 or not rows.all() else None)
 
-        projections = [_projection(E)]
+    @staticmethod
+    def _decompose(groups, environment, subgroups):
+        """Bases of P(env), P(env, group)(, P(env, group, subgroup)) of these individuals, and the
+        inverse of the matrix C with E[y'Q_i y] = sum_j C_ij s2_j (s2: group, (subgroup,)
+        residual)."""
+        n = len(groups)
+        E = np.concatenate([np.ones((n, 1))] + [_dummies(environment[:, a], True)
+                                               for a in range(environment.shape[1])], 1)
+        Z = [_dummies(groups)] + ([] if subgroups is None else [_dummies(subgroups)])
+        bases = [_range_basis(E)]
         design = E
         for Zi in Z:
             design = np.concatenate([design, Zi], 1)
-            projections.append(_projection(design))
-        Q = [projections[i + 1] - projections[i] for i in range(len(Z))]
-        Q.append(np.eye(n) - projections[-1])
-
-        # E[y'Q_i y] = sum_j tr(Q_i Z_j Z_j') s2_j + tr(Q_i) s2_residual
-        ZZ = [Zi @ Zi.T for Zi in Z]
-        C = np.array([[np.einsum('ij,ji->', Qi, ZZj) for ZZj in ZZ] + [np.trace(Qi)] for Qi in Q])
-        self.Cinv = torch.tensor(np.linalg.inv(C), device=device, dtype=torch.float64)
-        self.Q = torch.tensor(np.stack(Q), device=device, dtype=torch.float64)
+            bases.append(_range_basis(design))
+        # tr(Q_i Z_j Z_j') and tr(Q_i) from the bases: tr(U U' M M') = |U'M|^2
+        projected = [[np.sum((U.T @ Zj) ** 2) for Zj in Z] + [U.shape[1]] for U in bases]
+        full = [np.sum(Zj ** 2) for Zj in Z] + [n]
+        C = np.array([np.subtract(projected[i + 1], projected[i]) for i in range(len(Z))]
+                     + [np.subtract(full, projected[-1])])
+        return bases, np.linalg.inv(C)
 
     def components(self, Y):
         """Variance components of each column of Y: rows are group, (subgroup,) residual."""
-        Y = Y.to(self.Q.dtype)
+        Y = Y.to(torch.float64)
         if Y.dim() == 1:
             Y = Y[:, None]
-        quadratic = torch.stack([((Qi @ Y) * Y).sum(0) for Qi in self.Q])
-        return self.Cinv @ quadratic
+        if self._mask is None:
+            mask, bases, Cinv, _ = self._sets[0]
+            return Cinv @ self._quadratic(Y * mask[:, None], bases)
+        components = torch.zeros((self.n_components, Y.shape[1]), dtype=Y.dtype, device=Y.device)
+        for mask, bases, Cinv, columns in self._sets:
+            Ys = Y[:, columns] * mask[:, None]
+            components = components.index_copy(1, columns, Cinv @ self._quadratic(Ys, bases))
+        return components
+
+    @staticmethod
+    def _quadratic(Y, bases):
+        """y'Q y of each column for Q_group, (Q_subgroup,) Q_residual: differences of y'P y over
+        P(env), P(env, group), ..., and y'y."""
+        norms = [((U.T @ Y) ** 2).sum(0) for U in bases] + [(Y ** 2).sum(0)]
+        return torch.stack([norms[i + 1] - norms[i] for i in range(len(bases))])
 
     def heritability(self, Y, denominator='total'):
         """Group variance over a denominator.
@@ -252,21 +290,30 @@ class Henderson3:
         the variance components ('components', the mixed-model convention).
         """
         components = self.components(Y)
-        if denominator == 'total':
-            Y = Y.to(self.Q.dtype)
-            if Y.dim() == 1:
-                Y = Y[:, None]
-            return components[0] / Y.var(0)
-        return components[0] / components.sum(0)
+        if denominator == 'components':
+            return components[0] / components.sum(0)
+        Y = Y.to(torch.float64)
+        if Y.dim() == 1:
+            Y = Y[:, None]
+        mask = self._sets[0][0][:, None] if self._mask is None else self._mask
+        n = mask.sum(0)
+        mean = (Y * mask).sum(0) / n
+        variance = (((Y - mean) * mask) ** 2).sum(0) / (n - 1)
+        return components[0] / variance
 
     def forms(self):
-        """(n, n) arrays A and B with y'A y / y'B y = heritability(y) (denominator 'total').
+        """(n, n) arrays A and B with y'A y / y'B y = heritability(y) (denominator 'total'), for a
+        design without rows.
 
         A gives the group variance, a fixed combination of the y'Q y; B the variance of y.
         """
-        Q = self.Q.cpu().numpy()
-        A = np.tensordot(self.Cinv[0].cpu().numpy(), Q, axes=1)
-        n = Q.shape[1]
+        if self._mask is not None:
+            raise ValueError('forms needs a design of all individuals (no rows)')
+        _, bases, Cinv, _ = self._sets[0]
+        P = [(U @ U.T).cpu().numpy() for U in bases]
+        n = P[0].shape[0]
+        Q = [P[i + 1] - P[i] for i in range(len(P) - 1)] + [np.eye(n) - P[-1]]
+        A = np.tensordot(Cinv[0].cpu().numpy(), np.stack(Q), axes=1)
         return A, (np.eye(n) - 1.0 / n) / (n - 1)
 
 

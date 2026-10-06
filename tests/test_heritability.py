@@ -56,3 +56,18 @@ def test_henderson3_forms_give_its_heritability():
         h2opt.heritability(Y, groups, environment, subgroups, 'henderson3'), ratio, rtol=1e-10)
     np.testing.assert_allclose(h2opt.heritability(Y, groups, environment),
                                h2opt.anova_heritability(Y, groups, environment), rtol=1e-12)
+
+
+def test_henderson3_rows_give_each_column_its_own_individuals():
+    rng = np.random.RandomState(2)
+    groups = np.repeat(np.arange(30), 4)
+    subgroups = np.tile([0, 0, 1, 1], 30)
+    environment = rng.randint(3, size=120)
+    rows = rng.rand(120, 3) < [0.6, 0.8, 0.6]
+    rows[:, 2] = rows[:, 0]
+    Y = torch.tensor(rng.normal(size=(120, 3)) + rng.normal(size=(30, 3))[groups])
+    together = h2opt.Henderson3(groups, environment, subgroups, rows=rows).heritability(Y)
+    for j in range(3):
+        r = rows[:, j]
+        alone = h2opt.Henderson3(groups[r], environment[r], subgroups[r]).heritability(Y[r, j])
+        assert together[j].item() == pytest.approx(alone.item(), rel=1e-10)
