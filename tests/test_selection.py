@@ -16,14 +16,13 @@ def test_group_folds_keep_groups_together_and_balance_folds():
 
 def test_cross_validate_averages_fold_scores():
     groups = np.repeat(np.arange(10), 2)
-    X = np.arange(20.0)[:, None]
+    X = np.arange(20.0)
 
-    def score_fold(X_fit, groups_fit, environment_fit, X_val, groups_val, environment_val):
-        assert not set(groups_fit) & set(groups_val)
-        assert environment_fit.shape == (len(X_fit), 0)
-        return [len(X_val), X_val.sum()]
+    def score_fold(fit, val):
+        assert not set(groups[fit]) & set(groups[val])
+        return [val.sum(), X[val].sum()]
 
-    scores, fold_scores = selection.cross_validate(X, groups, None, score_fold, n_folds=5)
+    scores, fold_scores = selection.cross_validate(groups, score_fold, n_folds=5)
     assert fold_scores.shape == (5, 2)
     assert fold_scores[:, 0].sum() == 20 and fold_scores[:, 1].sum() == X.sum()
     np.testing.assert_allclose(scores, fold_scores.mean(axis=0))
@@ -87,3 +86,14 @@ def test_select_noise_level_on_subsets_ignores_the_other_individuals(sorghum):
     _, alone, _ = selection.select_noise_level(make_model, changed, groups, environment, 1,
                                                 [subset], **options)
     np.testing.assert_allclose(together[0], alone[0], atol=1e-4)
+
+
+def test_pch_tune_on_several_measurement_sets_averages_their_scores(sorghum):
+    X, groups, environment = sorghum
+    first_set, second_set = X[:, ::20], X[:, 5::20]
+    options = dict(ridges=(1e-3, 1.0), n_folds=3, subgroups=np.arange(len(groups)) % 2,
+                   estimator='henderson3')
+    _, both, _ = baselines.PCH.tune([first_set, second_set], groups, environment, 1, **options)
+    _, first, _ = baselines.PCH.tune(first_set, groups, environment, 1, **options)
+    _, second, _ = baselines.PCH.tune(second_set, groups, environment, 1, **options)
+    np.testing.assert_allclose(both, (first + second) / 2, rtol=1e-10)

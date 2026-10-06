@@ -10,7 +10,7 @@ the centered training data, so the number of measurements may far exceed the num
 import numpy as np
 
 from .decorrelation import Decorrelation
-from .heritability import _as_environment, anova_heritability
+from .heritability import Henderson3, _as_environment, anova_heritability, heritability
 from .selection import RIDGES, cross_validate
 
 
@@ -43,20 +43,25 @@ class LinearBaseline:
         self.n_traits = n_traits
 
     def fit(self, X, groups, environment=None):
-        X = np.asarray(X, dtype=float)
+        X, Xc, V, Z = self._coordinates(X)
         groups = np.asarray(groups)
         environment = _as_environment(environment, len(groups))
+        return self._finish(Xc, V @ self._directions(Z, groups, environment,
+                                                     n_features=X.shape[1]))
 
+    def _coordinates(self, X):
+        """X as floats, centered by its mean (set as mean_), and orthonormal coordinates Z of the
+        centered data: Xc = Z V'."""
+        X = np.asarray(X, dtype=float)
         self.mean_ = X.mean(axis=0)
         Xc = X - self.mean_
-        # orthonormal coordinates of the training data: Xc = Z V'
         _, s, Vt = np.linalg.svd(Xc, full_matrices=False)
         keep = s > s.max() * 1e-10
         V = Vt[keep].T
-        Z = Xc @ V
+        return X, Xc, V, Xc @ V
 
-        W = V @ self._directions(Z, groups, environment, n_features=X.shape[1])
-
+    def _finish(self, Xc, W):
+        """Set the map of the traits Xc W, made uncorrelated on the training individuals."""
         # Xc @ W has mean 0, so the map of the decorrelated traits is linear in Xc
         self.components_ = W @ Decorrelation().fit(Xc @ W).components_
         return self
@@ -113,36 +118,84 @@ class LDA(LinearBaseline):
 class PCH(LinearBaseline):
     """Principal components of heritability with ridge regularization (Wang et al. 2007).
 
-    Maximizes w'A w / w'(B + ridge * tr(B) / p * I) w, where w'A w / w'B w is exactly the ANOVA
-    heritability of the trait X w (anova_heritability: environment means removed, groups with one
-    individual dropped) and p is the number of measurements. Successive traits maximize the same
-    ratio subject to being uncorrelated with the earlier ones. ridge = 0 gives unregularized PCH.
+    Maximizes w'A w / w'(B + ridge * tr(B) / p * I) w, where w'A w / w'B w is exactly the
+    heritability of the trait X w by the estimator (ESTIMATORS in h2opt.heritability) and p is the
+    number of measurements: 'anova', anova_heritability (environment means removed, groups with
+    one individual dropped), or 'henderson3', Henderson3(groups, environment, subgroups). Successive
+    traits maximize the same ratio subject to being uncorrelated with the earlier ones. ridge = 0
+    gives unregularized PCH.
     """
 
-    def __init__(self, n_traits, ridge=0.0):
+    def __init__(self, n_traits, ridge=0.0, estimator='anova'):
         super().__init__(n_traits)
         self.ridge = ridge
+        self.estimator = estimator
+
+    def fit(self, X, groups, environment=None, subgroups=None):
+        fitted = self.fit_ridges(X, groups, environment, subgroups, self.n_traits, [self.ridge],
+                                 self.estimator)[0]
+        self.mean_, self.components_ = fitted.mean_, fitted.components_
+        return self
+
+    def fit_transform(self, X, groups, environment=None, subgroups=None):
+        return self.fit(X, groups, environment, subgroups).transform(X)
 
     @classmethod
-    def tune(cls, X, groups, environment, n_traits, ridges=RIDGES, n_folds=5, seed=0):
+    def fit_ridges(cls, X, groups, environment, subgroups, n_traits, ridges, estimator='anova'):
+        """PCH fitted at each of the ridges; the decomposition of X and the heritability forms
+        are computed once. Returns a list of fitted PCH."""
+        start = cls(n_traits, estimator=estimator)
+        X, Xc, V, Z = start._coordinates(X)
+        groups = np.asarray(groups)
+        environment = _as_environment(environment, len(groups))
+        if estimator == 'anova':
+            if subgroups is not None:
+                raise ValueError("subgroups need estimator='henderson3'")
+            A, B = cls.heritability_forms(Z, groups, environment)
+        else:
+            A, B = Henderson3(groups, environment, subgroups).forms()
+            A, B = Z.T @ A @ Z, Z.T @ B @ Z
+        fitted = []
+        for ridge in ridges:
+            pch = cls(n_traits, ridge, estimator)
+            pch.mean_ = start.mean_
+            regularized = B + ridge * np.trace(B) / X.shape[1] * np.eye(B.shape[0])
+            fitted.append(pch._finish(Xc, V @ _top_generalized(A, regularized, n_traits)))
+        return fitted
+
+    @classmethod
+    def tune(cls, X, groups, environment, n_traits, ridges=RIDGES, n_folds=5, seed=0,
+             subgroups=None, estimator='anova'):
         """Choose the ridge by cross-validated heritability.
 
         For each fold of the groups (h2opt.selection.cross_validate) and each ridge, PCH is fitted
-        on the other folds and scored by the mean heritability of its traits on the held-out fold.
+        on the other folds and scored by the mean heritability (by the same estimator) of its
+        traits on the held-out fold. X is one (n, p) array, or a list of arrays of the same
+        individuals (e.g. one per date); then one ridge serves all of them, PCH is fitted to each,
+        and the score is the mean over them.
         Returns (ridge with the best mean score, scores (len(ridges),), fold_scores).
         """
-        def score_fold(X_fit, groups_fit, environment_fit, X_val, groups_val, environment_val):
-            return [anova_heritability(
-                cls(n_traits, ridge).fit(X_fit, groups_fit, environment_fit).transform(X_val),
-                groups_val, environment_val).mean() for ridge in ridges]
+        sets = X if isinstance(X, list | tuple) else [X]
+        groups = np.asarray(groups)
+        environment = _as_environment(environment, len(groups))
 
-        scores, fold_scores = cross_validate(X, groups, environment, score_fold, n_folds, seed)
+        def part(labels, rows):
+            return None if labels is None else np.asarray(labels)[rows]
+
+        def score_fold(fit, val):
+            scores = []
+            for measurements in sets:
+                measurements = np.asarray(measurements)
+                fitted = cls.fit_ridges(measurements[fit], groups[fit], environment[fit],
+                                        part(subgroups, fit), n_traits, ridges, estimator)
+                traits = np.concatenate([pch.transform(measurements[val]) for pch in fitted],
+                                        axis=1)
+                scores.append(heritability(traits, groups[val], environment[val],
+                                           part(subgroups, val), estimator))
+            return np.mean(scores, axis=0).reshape((len(ridges), n_traits)).mean(axis=1)
+
+        scores, fold_scores = cross_validate(groups, score_fold, n_folds, seed)
         return ridges[int(np.argmax(scores))], scores, fold_scores
-
-    def _directions(self, Z, groups, environment, n_features):
-        A, B = self.heritability_forms(Z, groups, environment)
-        B = B + self.ridge * np.trace(B) / n_features * np.eye(B.shape[0])
-        return _top_generalized(A, B, self.n_traits)
 
     @staticmethod
     def heritability_forms(Z, groups, environment=None):

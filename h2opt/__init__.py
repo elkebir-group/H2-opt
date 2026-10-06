@@ -3,11 +3,13 @@
 from . import baselines, selection
 from .decorrelation import Decorrelation
 from .heritability import (
+    ESTIMATORS,
     AnovaDesign,
     Henderson3,
     anova_heritability,
     genetic_covariance,
     grouped_variance,
+    heritability,
     remove_environment,
 )
 from .io import load_npz
@@ -16,6 +18,7 @@ from .simulate import encode_latent, latent_scale
 from .train import synthetic_traits, train, train_batch, train_models
 
 __all__ = [
+    "ESTIMATORS",
     "AnovaDesign",
     "AutoEncoder",
     "ConvModel",
@@ -29,6 +32,7 @@ __all__ = [
     "encode_latent",
     "genetic_covariance",
     "grouped_variance",
+    "heritability",
     "latent_scale",
     "load_npz",
     "remove_environment",

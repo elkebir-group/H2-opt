@@ -54,3 +54,27 @@ def test_decorrelation_is_sequential_least_squares():
     residual = Y[:, 2] - np.column_stack([np.ones(200), Y[:, :2]]) @ coef
     np.testing.assert_allclose(out[:, 2], residual, atol=1e-10)
     np.testing.assert_allclose(out[:, 0], Y[:, 0] - Y[fit, 0].mean(), atol=1e-10)
+
+
+def test_pch_henderson3_maximizes_henderson3_heritability(sorghum):
+    X, groups, environment = sorghum
+    X = X[:600, ::40]
+    groups, environment = groups[:600], environment[:600]
+    subgroups = np.arange(600) % 2
+    pch = baselines.PCH(2, estimator='henderson3').fit(X, groups, environment, subgroups)
+    model = h2opt.Henderson3(groups, environment, subgroups)
+    best = model.heritability(torch.tensor(pch.transform(X)[:, :1])).item()
+    w = np.random.RandomState(0).normal(size=(X.shape[1], 20))
+    others = np.c_[X @ w, baselines.PCH(1).fit_transform(X, groups, environment)]
+    assert np.all(model.heritability(torch.tensor(others)).numpy() <= best + 1e-8)
+
+
+def test_pch_fit_ridges_equals_separate_fits(sorghum):
+    X, groups, environment = sorghum
+    X = X[:300, ::50]
+    groups, environment = groups[:300], environment[:300]
+    ridges = (1e-4, 1e-1)
+    fitted = baselines.PCH.fit_ridges(X, groups, environment, None, 2, ridges)
+    for pch, ridge in zip(fitted, ridges, strict=True):
+        alone = baselines.PCH(2, ridge).fit_transform(X, groups, environment)
+        np.testing.assert_allclose(pch.transform(X), alone, atol=1e-8)

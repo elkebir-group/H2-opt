@@ -1,4 +1,5 @@
-"""ANOVA heritability and genetic covariance of traits, differentiable in PyTorch."""
+"""Heritability (ANOVA, Henderson's Method III) and genetic covariance of traits, differentiable in
+PyTorch."""
 
 import numpy as np
 import torch
@@ -257,3 +258,32 @@ class Henderson3:
                 Y = Y[:, None]
             return components[0] / Y.var(0)
         return components[0] / components.sum(0)
+
+    def forms(self):
+        """(n, n) arrays A and B with y'A y / y'B y = heritability(y) (denominator 'total').
+
+        A gives the group variance, a fixed combination of the y'Q y; B the variance of y.
+        """
+        Q = self.Q.cpu().numpy()
+        A = np.tensordot(self.Cinv[0].cpu().numpy(), Q, axes=1)
+        n = Q.shape[1]
+        return A, (np.eye(n) - 1.0 / n) / (n - 1)
+
+
+ESTIMATORS = ('anova', 'henderson3')
+
+
+def heritability(Y, groups, environment=None, subgroups=None, estimator='anova'):
+    """Heritability of each column of the (n, k) array Y by an estimator of ESTIMATORS.
+
+    'anova' is anova_heritability (subgroups must be None); 'henderson3' is
+    Henderson3(groups, environment, subgroups).heritability. Computed in float64; returns an array.
+    """
+    Y = np.asarray(Y, dtype=np.float64)
+    if estimator == 'anova':
+        if subgroups is not None:
+            raise ValueError("subgroups need estimator='henderson3'")
+        return anova_heritability(Y, groups, environment)
+    if estimator == 'henderson3':
+        return Henderson3(groups, environment, subgroups).heritability(torch.tensor(Y)).numpy()
+    raise ValueError(f'estimator must be one of {ESTIMATORS}, not {estimator!r}')

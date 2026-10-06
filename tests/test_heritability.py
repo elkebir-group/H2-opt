@@ -40,3 +40,19 @@ def test_henderson3_is_unbiased_with_confounded_environment():
              + r.normal(size=30)[environment[:, 1]] + 2 * environment[:, 0])
         estimates.append(model.components(torch.tensor(y)).numpy()[:, 0])
     np.testing.assert_allclose(np.mean(estimates, axis=0), [1.0, 0.49, 1.0], atol=0.03)
+
+
+def test_henderson3_forms_give_its_heritability():
+    rng = np.random.RandomState(1)
+    groups = np.repeat(np.arange(20), 6)
+    subgroups = np.tile(np.repeat(np.arange(2), 3), 20)
+    environment = rng.randint(4, size=(120, 1))
+    model = h2opt.Henderson3(groups, environment, subgroups=subgroups)
+    A, B = model.forms()
+    Y = rng.normal(size=(120, 5)) + rng.normal(size=(20, 5))[groups]
+    ratio = np.einsum('ik,ij,jk->k', Y, A, Y) / np.einsum('ik,ij,jk->k', Y, B, Y)
+    np.testing.assert_allclose(ratio, model.heritability(torch.tensor(Y)).numpy(), rtol=1e-10)
+    np.testing.assert_allclose(
+        h2opt.heritability(Y, groups, environment, subgroups, 'henderson3'), ratio, rtol=1e-10)
+    np.testing.assert_allclose(h2opt.heritability(Y, groups, environment),
+                               h2opt.anova_heritability(Y, groups, environment), rtol=1e-12)

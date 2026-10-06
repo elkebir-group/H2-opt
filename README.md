@@ -39,6 +39,7 @@ Groups with a single individual are ignored.
 `Henderson3(groups, environment, subgroups=None)` estimates heritability by Henderson's Method III, treating environment as fixed and groups (and optional subgroups nested in groups, e.g. plots of one family) as random effects.
 Unlike `anova_heritability`, it stays unbiased when environment and groups are confounded, and it separates shared subgroup effects from genetic variance.
 It precomputes n by n matrices for a fixed set of individuals, then `Henderson3(...).heritability(traits)` is differentiable.
+`heritability(traits, groups, environment, subgroups, estimator)` computes either estimator (`ESTIMATORS`: `'anova'`, `'henderson3'`) on arrays.
 
 Example: the heritability of the first 10 wavelengths of the sorghum hyperspectral data in `data/examples` (the measurements are split over two files because of GitHub file size limits).
 
@@ -126,8 +127,9 @@ Their traits are centered and made uncorrelated on the training individuals (`De
 - `PCA(n_traits)`: principal components of the measurements.
 - `GeneticPCA(n_traits)`: principal components of the ANOVA estimate of the genetic covariance.
 - `LDA(n_traits)`: linear discriminant analysis of the groups (unregularized).
-- `PCH(n_traits, ridge)`: principal components of heritability, maximizing the ANOVA heritability above with ridge regularization.
-  `PCH.tune` chooses the ridge from `RIDGES` (1e-6 to 100) by the highest mean held-out heritability.
+- `PCH(n_traits, ridge, estimator='anova')`: principal components of heritability, maximizing the ANOVA heritability above (or, with `estimator='henderson3'` and `fit(X, groups, environment, subgroups)`, Henderson's Method III) with ridge regularization.
+  Both estimators are ratios of quadratic forms in the trait, so the solution is exact. PCH works in the span of the training data, so the measurements may far outnumber the individuals (e.g. image pixels).
+  `PCH.tune` chooses the ridge from `RIDGES` (1e-6 to 100) by the highest mean held-out heritability, with the same estimator; given a list of measurement sets of the same individuals (e.g. one per date), it chooses one ridge for all of them by their mean score.
 - `MaxHeritabilityFeatures(n_traits)`: the most heritable individual features, selected greedily.
 
 ```python

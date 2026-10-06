@@ -40,20 +40,14 @@ def group_folds(groups, n_folds=5, seed=0):
     return per_group(groups, lambda c: np.random.RandomState(seed).permutation(c) % n_folds)
 
 
-def cross_validate(X, groups, environment, score_fold, n_folds=5, seed=0):
+def cross_validate(groups, score_fold, n_folds=5, seed=0):
     """Scores of a set of settings, per fold of the groups.
 
-    score_fold(X_fit, groups_fit, environment_fit, X_val, groups_val, environment_val) returns
-    one score per setting. Returns (scores averaged over the folds, (n_folds, n_settings) scores).
+    score_fold(fit, val), with boolean masks of the training and held-out individuals, returns one
+    score per setting. Returns (scores averaged over the folds, (n_folds, n_settings) scores).
     """
-    X = np.asarray(X)
-    groups = np.asarray(groups)
-    environment = _as_environment(environment, len(groups))
-    fold = group_folds(groups, n_folds, seed)
-    fold_scores = np.array([
-        score_fold(X[fold != f], groups[fold != f], environment[fold != f],
-                   X[fold == f], groups[fold == f], environment[fold == f])
-        for f in range(n_folds)])
+    fold = group_folds(np.asarray(groups), n_folds, seed)
+    fold_scores = np.array([score_fold(fold != f, fold == f) for f in range(n_folds)])
     return fold_scores.mean(axis=0), fold_scores
 
 
