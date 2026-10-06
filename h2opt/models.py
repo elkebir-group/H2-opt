@@ -37,6 +37,30 @@ class ConvModel(nn.Module):
         return self.lin1(x)
 
 
+class ImageConvModel(nn.Module):
+    """Two 2D convolutions (10 channels each; kernel 6, stride 3, then kernel 4, stride 3; leaky
+    ReLU), then a linear layer.
+
+    Input is (n, n_channels, height, width), e.g. a multispectral image per individual;
+    image_size is height (= width) or (height, width). The model of the paper's Miscanthus images
+    (6 channels, 63 x 63 pixels).
+    """
+
+    def __init__(self, n_channels, image_size, n_out=1):
+        super().__init__()
+        self.nonlin = nn.LeakyReLU()
+        self.conv1 = nn.Conv2d(n_channels, 10, 6, stride=3)
+        self.conv2 = nn.Conv2d(10, 10, 4, stride=3)
+        height, width = (image_size, image_size) if isinstance(image_size, int) else image_size
+        size = [((length - 6) // 3 + 1 - 4) // 3 + 1 for length in (height, width)]
+        self.lin1 = nn.Linear(10 * size[0] * size[1], n_out)
+
+    def forward(self, x):
+        x = self.nonlin(self.conv1(x))
+        x = self.nonlin(self.conv2(x))
+        return self.lin1(x.reshape((x.shape[0], -1)))
+
+
 class TraitModels(nn.Module):
     """One independent model per synthetic trait.
 

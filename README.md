@@ -90,7 +90,7 @@ Options: `n_iter` steps per trait (default 10000); `optimizer`, `'adam'` (defaul
 `estimator` chooses the heritability that is optimized and reported: `'anova'` (default, `anova_heritability`) or `'henderson3'` (`Henderson3`, with `subgroups`, e.g. plots of one family).
 `'adam'` uses momentum 0.99 and decays the learning rate to 0 on a cosine schedule over the `n_iter` steps of each trait.
 `'rmsprop'` is the optimizer of the paper (constant learning rate). It converges slowly when the measurements are strongly correlated: the heritability does not change with the scale of a trait, so its steps shrink relative to the weights as the weights grow.
-`ConvModel` is a convolutional alternative to `LinearModel` for spectra.
+`ConvModel` is a convolutional alternative to `LinearModel` for spectra, and `ImageConvModel(n_channels, image_size)` one for multispectral images (input n x channels x height x width; the paper's Miscanthus model).
 
 `train_batch` trains one trait in each of many models at once, each with its own training individuals, noise level and earlier traits.
 `train_models` trains several `TraitModels` at once on it, each with its own `train_test` and noise levels (e.g. the outer folds of a dataset, or one model per noise level); `train` is `train_models` with one model.

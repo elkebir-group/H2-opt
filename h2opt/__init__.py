@@ -13,7 +13,7 @@ from .heritability import (
     remove_environment,
 )
 from .io import load_npz
-from .models import AutoEncoder, ConvModel, LinearModel, TraitModels
+from .models import AutoEncoder, ConvModel, ImageConvModel, LinearModel, TraitModels
 from .simulate import encode_latent, latent_scale
 from .train import synthetic_traits, train, train_batch, train_models
 
@@ -24,6 +24,7 @@ __all__ = [
     "ConvModel",
     "Decorrelation",
     "Henderson3",
+    "ImageConvModel",
     "LinearModel",
     "TraitModels",
     "anova_heritability",
