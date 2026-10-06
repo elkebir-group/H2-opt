@@ -40,13 +40,14 @@ def group_folds(groups, n_folds=5, seed=0):
     return per_group(groups, lambda c: np.random.RandomState(seed).permutation(c) % n_folds)
 
 
-def cross_validate(groups, score_fold, n_folds=5, seed=0):
-    """Scores of a set of settings, per fold of the groups.
+def cross_validate(units, score_fold, n_folds=5, seed=0):
+    """Scores of a set of settings, per fold of the units (labels of the individuals, e.g. their
+    groups; group_folds keeps the individuals of a unit together).
 
     score_fold(fit, val), with boolean masks of the training and held-out individuals, returns one
     score per setting. Returns (scores averaged over the folds, (n_folds, n_settings) scores).
     """
-    fold = group_folds(np.asarray(groups), n_folds, seed)
+    fold = group_folds(np.asarray(units), n_folds, seed)
     fold_scores = np.array([score_fold(fold != f, fold == f) for f in range(n_folds)])
     return fold_scores.mean(axis=0), fold_scores
 
@@ -58,25 +59,25 @@ def noise_scale(X):
 
 def select_noise_level(make_model, X, groups, environment, n_traits, subsets=None,
                        levels=NOISE_LEVELS, n_splits=5, n_folds=5, seed=0, subgroups=None,
-                       estimator='anova', **train_options):
+                       estimator='anova', split_units=None, **train_options):
     """Noise level of H2-opt, one for all traits, by the held-out heritability of the traits.
 
-    One selection runs on each subset of the individuals (subsets: (k, n) boolean, e.g. the
-    training individuals of k outer folds; default: one selection on all). Within a subset, the
-    groups are assigned to n_folds folds (group_folds); each of the first n_splits folds (default:
-    all) is the held-out fold of one validation split. In each split and for each level, traits
-    0..n_traits-1 are trained in order on the other folds, as in train: a fresh model per trait
-    (make_model(), a module mapping the measurements of n individuals to (n, 1)), normal noise of
-    standard deviation level * noise_scale(X) (X of the subset), in the loss the trait's residual
-    on the earlier traits of the same split and level. The score of a trait is its heritability
-    (estimator and subgroups as in train) on the held-out fold, after it is made uncorrelated with
-    the earlier traits on the training folds (Decorrelation, as in synthetic_traits). The chosen
-    level has the best score averaged over the traits and splits, as for the PCH ridge
-    (PCH.tune). X is one array of measurements (first axis: individuals), or a list of arrays of
-    the same individuals (e.g. one per date): then every set is trained and scored, and one level
-    serves all sets by their mean score, as in PCH.tune. All subsets, splits and levels of one
-    trait (and set) are trained together by train_batch; train_options go to it (e.g. n_iter,
-    device, max_copies).
+    One selection runs on each subset of the individuals (subsets: (k, n) boolean, e.g. the training
+    individuals of k outer folds; default: one selection on all). Within a subset, the groups (or
+    the split_units, labels of the individuals; e.g. np.arange(n) to split individuals) are assigned
+    to n_folds folds (group_folds); each of the first n_splits folds (default: all) is the held-out
+    fold of one validation split. In each split and for each level, traits 0..n_traits-1 are trained
+    in order on the other folds, as in train: a fresh model per trait (make_model(), a module
+    mapping the measurements of n individuals to (n, 1)), normal noise of standard deviation level *
+    noise_scale(X) (X of the subset), in the loss the trait's residual on the earlier traits of the
+    same split and level. The score of a trait is its heritability (estimator and subgroups as in
+    train) on the held-out fold, after it is made uncorrelated with the earlier traits on the
+    training folds (Decorrelation, as in synthetic_traits). The chosen level has the best score
+    averaged over the traits and splits, as for the PCH ridge (PCH.tune). X is one array of
+    measurements (first axis: individuals), or a list of arrays of the same individuals (e.g. one
+    per date): then every set is trained and scored, and one level serves all sets by their mean
+    score, as in PCH.tune. All subsets, splits and levels of one trait (and set) are trained
+    together by train_batch; train_options go to it (e.g. n_iter, device, max_copies).
     Returns (the chosen level of each subset (k,), (k, n_traits, n_splits, n_levels) scores, and
     the trained traits before decorrelation, (k, n_traits, n_splits, n_levels, n) float32, on all
     n individuals); with a list of sets, scores and traits have a set axis after the first. The
@@ -87,13 +88,14 @@ def select_noise_level(make_model, X, groups, environment, n_traits, subsets=Non
     groups = np.asarray(groups)
     environment = _as_environment(environment, len(groups))
     subgroups = None if subgroups is None else np.asarray(subgroups)
+    units = groups if split_units is None else np.asarray(split_units)
     subsets = np.ones((1, len(groups)), dtype=bool) if subsets is None else np.asarray(subsets)
     n_subsets = len(subsets)
     # copies: (subset, split, level), with the training and held-out individuals of the split
     copies, fit, held_out = [], [], []
     for i, subset in enumerate(subsets):
         fold = np.full(len(groups), -1)
-        fold[subset] = group_folds(groups[subset], n_folds, seed)
+        fold[subset] = group_folds(units[subset], n_folds, seed)
         for split in range(n_splits):
             for a in range(len(levels)):
                 copies.append((i, split, a))

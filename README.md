@@ -119,6 +119,7 @@ Within each subset of the individuals (`subsets`, e.g. the training individuals 
 The levels are `NOISE_LEVELS` (0.001 to 10), the square roots of the PCH ridges `RIDGES`, so that level s has the penalty of ridge s^2. The chosen level has the best held-out heritability averaged over the traits and splits, the same rule as `PCH.tune`.
 All subsets, splits and levels of a trait are trained together by `train_batch`.
 Given a list of measurement sets of the same individuals (e.g. one per date), it trains and scores each set and chooses one level for all of them by their mean score, as `PCH.tune` chooses one ridge.
+With `split_units` (e.g. the individuals themselves), the validation folds split those units instead of the groups; `PCH.tune` takes it too.
 `select_noise_level` also returns the scores of each trait and the trained validation traits (before decorrelation) for each subset, trait, split and level. The traits of a level do not depend on the other levels, so another rule over the levels can be examined without training again.
 
 ## Baselines

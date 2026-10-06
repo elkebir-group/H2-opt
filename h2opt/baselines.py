@@ -165,12 +165,13 @@ class PCH(LinearBaseline):
 
     @classmethod
     def tune(cls, X, groups, environment, n_traits, ridges=RIDGES, n_folds=5, seed=0,
-             subgroups=None, estimator='anova'):
+             subgroups=None, estimator='anova', split_units=None):
         """Choose the ridge by cross-validated heritability.
 
-        For each fold of the groups (h2opt.selection.cross_validate) and each ridge, PCH is fitted
-        on the other folds and scored by the mean heritability (by the same estimator) of its
-        traits on the held-out fold. X is one (n, p) array, or a list of arrays of the same
+        For each fold of the groups (or of the split_units, labels of the individuals, as in
+        h2opt.selection.select_noise_level; h2opt.selection.cross_validate) and each ridge, PCH
+        is fitted on the other folds and scored by the mean heritability (by the same estimator)
+        of its traits on the held-out fold. X is one (n, p) array, or a list of arrays of the same
         individuals (e.g. one per date); then one ridge serves all of them, PCH is fitted to each,
         and the score is the mean over them.
         Returns (ridge with the best mean score, scores (len(ridges),), fold_scores).
@@ -194,7 +195,8 @@ class PCH(LinearBaseline):
                                            part(subgroups, val), estimator))
             return np.mean(scores, axis=0).reshape((len(ridges), n_traits)).mean(axis=1)
 
-        scores, fold_scores = cross_validate(groups, score_fold, n_folds, seed)
+        units = groups if split_units is None else split_units
+        scores, fold_scores = cross_validate(units, score_fold, n_folds, seed)
         return ridges[int(np.argmax(scores))], scores, fold_scores
 
     @staticmethod

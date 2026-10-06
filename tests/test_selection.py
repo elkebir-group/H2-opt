@@ -115,3 +115,17 @@ def test_select_noise_level_on_several_measurement_sets_averages_their_scores(so
     assert both.shape == (1, 2, 1, 2, 2) and traits.shape == (1, 2, 1, 2, 2, len(groups))
     np.testing.assert_allclose(both[:, 0], first, atol=1e-4)
     assert chosen[0] == options['levels'][int(np.argmax(both[0].mean(axis=(0, 1, 2))))]
+
+
+def test_split_units_assign_individuals_to_validation_folds(sorghum):
+    X, groups, environment = sorghum
+    X = X[:, ::20]
+    plants = np.arange(len(groups))
+    _, scores, fold_scores = baselines.PCH.tune(X, groups, environment, 1, ridges=(1e-3,),
+                                                n_folds=3, split_units=plants)
+    fold = selection.group_folds(plants, 3)
+    fit, val = fold != 0, fold == 0
+    assert set(groups[fit]) & set(groups[val])
+    pch = baselines.PCH(1, 1e-3).fit(X[fit], groups[fit], environment[fit])
+    expected = h2opt.anova_heritability(pch.transform(X[val]), groups[val], environment[val])
+    assert fold_scores[0, 0] == pytest.approx(expected[0])
