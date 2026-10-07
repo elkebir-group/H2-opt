@@ -8,6 +8,8 @@ the centered training data, so the number of measurements may far exceed the num
 """
 
 import numpy as np
+import scipy.linalg
+from scipy.sparse.linalg import eigsh
 
 from .decorrelation import Decorrelation
 from .folds import cross_validate
@@ -41,6 +43,32 @@ def _top_generalized(A, B, k, tol=1e-10):
     if k > V.shape[1]:
         raise ValueError(f'at most {V.shape[1]} traits can be extracted, {k} requested')
     return whiten @ V[:, ::-1][:, :k]
+
+
+def _top_symmetric(matrix, k):
+    """Eigenvectors of the k largest eigenvalues of the symmetric matrix, largest first."""
+    n = matrix.shape[0]
+    if k > n:
+        raise ValueError(f'at most {n} traits can be extracted, {k} requested')
+    if n > 10 * k + 100:
+        # a few Lanczos iterations instead of the full decomposition
+        values, V = eigsh(matrix, k=k, which='LA', tol=0, v0=np.ones(n))
+    else:
+        values, V = scipy.linalg.eigh(matrix, subset_by_index=[n - k, n - 1])
+    return V[:, np.argsort(values)[::-1]]
+
+
+def _top_ridges(A, B, k, shifts):
+    """Top-k solutions of A w = l (B + s I) w for each shift s > 0, for symmetric A and positive
+    semidefinite B, scaled as by _top_generalized (w'(B + s I) w = 1). B + s I has the
+    eigenvectors of B, so one decomposition of B serves all shifts."""
+    values, U = np.linalg.eigh((B + B.T) / 2)
+    A = U.T @ ((A + A.T) / 2) @ U
+    directions = []
+    for s in shifts:
+        d = 1 / np.sqrt(np.maximum(values, 0) + s)
+        directions.append(U @ (d[:, None] * _top_symmetric(d[:, None] * A * d, k)))
+    return directions
 
 
 class LinearBaseline:
@@ -157,13 +185,33 @@ class PCH(LinearBaseline):
         environment = _as_environment(environment, len(groups))
         A, B = heritability_design(estimator, groups, environment, subgroups).forms()
         A, B = Z.T @ A @ Z, Z.T @ B @ Z
+        shifts = [ridge * np.trace(B) / X.shape[1] for ridge in ridges]
+        positive = [s for s in shifts if s > 0]
+        top = dict(zip(positive, _top_ridges(A, B, n_traits, positive), strict=True))
         fitted = []
-        for ridge in ridges:
+        for ridge, shift in zip(ridges, shifts, strict=True):
             pch = cls(n_traits, ridge, estimator)
             pch.mean_ = start.mean_
-            regularized = B + ridge * np.trace(B) / X.shape[1] * np.eye(B.shape[0])
-            fitted.append(pch._finish(Xc, V @ _top_generalized(A, regularized, n_traits)))
+            W = top[shift] if shift > 0 else _top_generalized(A, B, n_traits)
+            fitted.append(pch._finish(Xc, V @ W))
         return fitted
+
+    def _coordinates(self, X):
+        """As LinearBaseline._coordinates, from the eigendecomposition of the smaller of the
+        Gram matrix Xc Xc' and the scatter matrix Xc'Xc rather than the SVD of Xc (faster when the
+        measurements far outnumber the individuals, or the reverse); directions with singular value
+        at most 1e-6 of the largest are dropped."""
+        X = np.asarray(X, dtype=float)
+        self.mean_ = X.mean(axis=0)
+        Xc = X - self.mean_
+        if Xc.shape[0] <= Xc.shape[1]:
+            values, U = np.linalg.eigh(Xc @ Xc.T)
+            keep = values > values.max() * 1e-12
+            V = (Xc.T @ U[:, keep]) / np.sqrt(values[keep])
+        else:
+            values, V = np.linalg.eigh(Xc.T @ Xc)
+            V = V[:, values > values.max() * 1e-12]
+        return X, Xc, V, Xc @ V
 
     @classmethod
     def tune(cls, X, groups, environment, n_traits, ridges=RIDGES, n_folds=5, seed=0,
