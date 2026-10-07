@@ -24,6 +24,24 @@ def test_baselines(sorghum):
     assert all(herit['pch'][0] >= h[0] - 1e-4 for h in herit.values())
 
 
+def test_max_features_never_picks_constant_or_spanned_measurements():
+    # small-scale measurements (as metabolite intensities over their maximum): a zero column, a
+    # copy of the most heritable column and many noisy ones; the picks stay distinct and
+    # independent, so their decorrelation exists
+    rng = np.random.RandomState(0)
+    groups = np.repeat(np.arange(30), 2)
+    genetic = rng.normal(size=30)[groups]
+    X = 1e-5 * rng.normal(size=(60, 40))
+    X[:, 1] += 1e-4 * genetic
+    X[:, 0] = 0
+    X[:, 2] = 3 * X[:, 1]
+    model = baselines.MaxHeritabilityFeatures(10).fit(X, groups)
+    assert model.features_[0] in (1, 2)
+    assert 0 not in model.features_ and not {1, 2} <= set(model.features_)
+    Y = model.transform(X)
+    np.testing.assert_allclose(np.corrcoef(Y.T), np.eye(10), atol=1e-8)
+
+
 def test_pch_more_measurements_than_individuals(sorghum):
     X, groups, environment = sorghum
     rows = np.arange(200)

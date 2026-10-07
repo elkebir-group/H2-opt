@@ -62,18 +62,18 @@ def _bases(earlier, rows, device):
     return bases
 
 
-def train_batch(models, X, groups, environment, train_rows, noise_levels, earlier=None,
+def train_batch(models, X, groups, environment, train_rows, noise_sd, earlier=None,
                 n_iter=10000, optimizer='adam', learning_rate=1e-3, noise='normal', clip=None,
                 device='cpu', subgroups=None, estimator='anova', max_copies=None):
     """Train one trait in each of several models at once; each copy is trained as by train.
 
     models: B modules of one class, each mapping (n, m) measurements to an (n, 1) trait; they are
     trained in place. train_rows: (B, n) boolean array, the training individuals of each copy.
-    noise_levels: length B, the noise level of each copy. earlier: None, or B arrays (n, t_b) with
-    the earlier traits of each copy for all individuals; in the loss, the trait of a copy is its
-    residual after least-squares regression on its earlier traits on its training rows.
-    All copies share each noise draw, scaled by their own noise level, so differences between
-    their noise levels are not confounded with the draw. The loss is the sum of the negative
+    noise_sd: length B, the noise standard deviation of each copy. earlier: None, or B arrays
+    (n, t_b) with the earlier traits of each copy for all individuals; in the loss, the trait of a
+    copy is its residual after least-squares regression on its earlier traits on its training rows.
+    All copies share each noise draw, scaled by their own noise_sd, so differences between
+    their noise are not confounded with the draw. The loss is the sum of the negative
     heritabilities of the copies, and each copy's parameters get only its own gradient, so the
     result does not depend on which copies are trained together. With max_copies, at most that
     many copies are trained at once (e.g. to fit large models in GPU memory), each chunk with its
@@ -82,11 +82,11 @@ def train_batch(models, X, groups, environment, train_rows, noise_levels, earlie
     n_copies = len(models)
     if max_copies is not None and n_copies > max_copies:
         train_rows = np.asarray(train_rows, dtype=bool).reshape((n_copies, -1))
-        noise_levels = np.broadcast_to(np.asarray(noise_levels, dtype=float), (n_copies,))
+        noise_sd = np.broadcast_to(np.asarray(noise_sd, dtype=float), (n_copies,))
         for start in range(0, n_copies, max_copies):
             chunk = slice(start, start + max_copies)
             train_batch(models[chunk], X, groups, environment, train_rows[chunk],
-                        noise_levels[chunk], None if earlier is None else earlier[chunk],
+                        noise_sd[chunk], None if earlier is None else earlier[chunk],
                         n_iter, optimizer, learning_rate, noise, clip, device, subgroups,
                         estimator)
         return models
@@ -100,7 +100,7 @@ def train_batch(models, X, groups, environment, train_rows, noise_levels, earlie
     if earlier is None:
         earlier = [np.zeros((len(groups), 0))] * n_copies
     X = torch.as_tensor(np.asarray(X), dtype=torch.float32, device=device)
-    noise_levels = torch.as_tensor(np.asarray(noise_levels, dtype=np.float32), device=device)
+    noise_sd = torch.as_tensor(np.asarray(noise_sd, dtype=np.float32), device=device)
     draw = _NOISE[noise]
 
     # only the individuals that some copy trains on take part
@@ -125,7 +125,7 @@ def train_batch(models, X, groups, environment, train_rows, noise_levels, earlie
         return functional_call(base, (p, b), (x,))[:, 0]
 
     def noisy_traits():
-        """(n, B) outputs of the copies on X + level * Z, Z a fresh noise draw."""
+        """(n, B) outputs of the copies on X + noise_sd * Z, Z a fresh noise draw."""
         if isinstance(base, LinearModel):
             W = params['lin1.weight'][:, 0, :].T
             if noise == 'normal':
@@ -133,12 +133,12 @@ def train_batch(models, X, groups, environment, train_rows, noise_levels, earlie
                 # directly: the same loss distribution without a noisy (n, m) draw
                 noise_w = draw((X.shape[0], 1), device=device) * torch.linalg.norm(W, axis=0)
             else:
-                # (X + level Z) w = X w + level (Z w): no noisy copy of X per copy
+                # (X + sd Z) w = X w + sd (Z w): no noisy copy of X per copy
                 noise_w = draw(X.shape, device=device) @ W
-            return X @ W + noise_w * noise_levels.reshape((1, -1)) + params['lin1.bias'].T
+            return X @ W + noise_w * noise_sd.reshape((1, -1)) + params['lin1.bias'].T
         Z = draw(X.shape, device=device)
-        levels = noise_levels.reshape((-1,) + (1,) * X.dim())
-        return vmap(forward)(params, buffers, X + Z * levels).T
+        sd = noise_sd.reshape((-1,) + (1,) * X.dim())
+        return vmap(forward)(params, buffers, X + Z * sd).T
 
     def step():
         Y = noisy_traits()
@@ -194,7 +194,7 @@ def train_batch(models, X, groups, environment, train_rows, noise_levels, earlie
 
 
 def train(model, X, groups, environment, train_test, model_file=None, n_traits=1, n_iter=10000,
-          optimizer='adam', learning_rate=1e-3, noise_level=0.1, noise='normal',
+          optimizer='adam', learning_rate=1e-3, noise_sd=0.1, noise='normal',
           clip=None, device='cpu', verbose=True, subgroups=None, estimator='anova',
           max_copies=None):
     """Train synthetic traits one at a time to maximize their heritability on training data.
@@ -207,14 +207,14 @@ def train(model, X, groups, environment, train_test, model_file=None, n_traits=1
     synthetic_traits(model, X, train_test == 0); with verbose, the train and test heritability of
     each trait is printed when it is trained.
     Each step adds noise to the training measurements and maximizes the heritability.
-    noise_level is one level for all traits or one per trait (length n_traits).
+    noise_sd is one noise standard deviation for all traits or one per trait (length n_traits).
     optimizer is 'adam' (the default: Adam with momentum 0.99, and a learning rate that decays from
     learning_rate to 0 on a cosine schedule over the n_iter steps of each trait) or 'rmsprop'
     (RMSprop with a constant learning rate, the paper's optimizer). The heritability does not
     change with the scale of a trait, so RMSprop's steps shrink relative to the weights as the
     weights grow, and it converges slowly for correlated measurements; momentum and the decay fix
-    this. noise is 'normal' (standard deviation noise_level, the default) or 'uniform' (in
-    [0, noise_level)). With clip, the standardized traits are clipped to [-clip, clip] in the
+    this. noise is 'normal' (standard deviation noise_sd, the default) or 'uniform' (the paper's
+    noise, in [0, noise_sd)). With clip, the standardized traits are clipped to [-clip, clip] in the
     loss; by default (None) the loss is the plain heritability.
     estimator is 'anova' (anova_heritability) or 'henderson3' (Henderson3 with subgroups, e.g.
     plots of one family; h2opt.heritability.ESTIMATORS); it is optimized and reported.
@@ -224,7 +224,7 @@ def train(model, X, groups, environment, train_test, model_file=None, n_traits=1
     train_models([model], X, groups, environment, np.asarray(train_test)[None],
                  model_files=None if model_file is None else [model_file], n_traits=n_traits,
                  n_iter=n_iter, optimizer=optimizer,
-                 learning_rate=learning_rate, noise_levels=noise_level, noise=noise, clip=clip,
+                 learning_rate=learning_rate, noise_sd=noise_sd, noise=noise, clip=clip,
                  device=device, verbose=verbose, subgroups=subgroups, estimator=estimator,
                  max_copies=max_copies)
     return model
@@ -232,13 +232,13 @@ def train(model, X, groups, environment, train_test, model_file=None, n_traits=1
 
 def train_models(models, X, groups, environment, train_test, model_files=None, n_traits=1,
                  n_iter=10000, optimizer='adam', learning_rate=1e-3,
-                 noise_levels=0.1, noise='normal', clip=None, device='cpu', verbose=True,
+                 noise_sd=0.1, noise='normal', clip=None, device='cpu', verbose=True,
                  subgroups=None, estimator='anova', max_copies=None):
     """Train several TraitModels at once, each as by train with its own data split and noise.
 
     models: B TraitModels of one kind. train_test: (B, n) array, the train_test of each model.
-    noise_levels: one level for all, one per model (B, 1), or one per model and trait
-    (B, n_traits). model_files: None, or one file per model. Trait t of all models is trained
+    noise_sd: one noise standard deviation for all, one per model (B, 1), or one per model and
+    trait (B, n_traits). model_files: None, or one file per model. Trait t of all models is trained
     together by train_batch, each model on top of its own traits 0..t-1, so the models share each
     noise draw. With verbose, the train and test heritability of each trait of each model is
     printed. The other options are as in train. Returns models.
@@ -247,7 +247,7 @@ def train_models(models, X, groups, environment, train_test, model_files=None, n
     subgroups = None if subgroups is None else np.asarray(subgroups)
     train_test = np.asarray(train_test).reshape((len(models), -1))
     is_train, is_test = train_test == 0, train_test == 1
-    levels = np.broadcast_to(np.asarray(noise_levels, dtype=float), (len(models), n_traits))
+    sd = np.broadcast_to(np.asarray(noise_sd, dtype=float), (len(models), n_traits))
     env = np.asarray(environment) if environment is not None else None
     x = torch.as_tensor(np.asarray(X), dtype=torch.float32, device=device)
     for model in models:
@@ -259,7 +259,7 @@ def train_models(models, X, groups, environment, train_test, model_files=None, n
             with torch.no_grad():
                 earlier.append(model(x, np.arange(trait)).double().cpu().numpy())
         train_batch([model.models[trait] for model in models], X, groups, environment, is_train,
-                    levels[:, trait], earlier, n_iter=n_iter, optimizer=optimizer,
+                    sd[:, trait], earlier, n_iter=n_iter, optimizer=optimizer,
                     learning_rate=learning_rate, noise=noise, clip=clip, device=device,
                     subgroups=subgroups, estimator=estimator, max_copies=max_copies)
         for b, model in enumerate(models):

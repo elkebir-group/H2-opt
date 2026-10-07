@@ -35,7 +35,7 @@ def best_level(levels, scores):
 def select_noise_level(make_model, X, groups, environment, n_traits, subsets=None,
                        levels=NOISE_LEVELS, n_splits=5, n_folds=5, seed=0, subgroups=None,
                        estimator='anova', split_units=None, **train_options):
-    """Noise level of H2-opt, one for all traits, by the held-out heritability of the traits.
+    """Noise of H2-opt, one level for all traits, by the held-out heritability of the traits.
 
     One selection runs on each subset of the individuals (subsets: (k, n) boolean, e.g. the training
     individuals of k outer folds; default: one selection on all). Within a subset, the groups (or
@@ -53,11 +53,13 @@ def select_noise_level(make_model, X, groups, environment, n_traits, subsets=Non
     per date): then every set is trained and scored, and one level serves all sets by their mean
     score. All subsets, splits and levels of one trait (and set) are trained
     together by train_batch; train_options go to it (e.g. n_iter, device, max_copies).
-    Returns (the chosen level of each subset (k,), (k, n_traits, n_splits, n_levels) scores, and
-    the trained traits before decorrelation, (k, n_traits, n_splits, n_levels, n) float32, on all
-    n individuals); with a list of sets, scores and traits have a set axis after the first. The
-    traits of a level do not depend on the other levels, so the traits and scores give the choice
-    of any other rule over the levels without training again.
+    Returns (noise_sd of each subset (k,), the chosen level times noise_scale(X) of the subset, for
+    train; (k, n_traits, n_splits, n_levels) scores; and the trained traits before decorrelation,
+    (k, n_traits, n_splits, n_levels, n) float32, on all n individuals); with a list of sets,
+    noise_sd (one per set: (k, sets)), scores and traits have a set axis after the first. The
+    chosen level of subset i is best_level(levels, scores[i]). The traits of a level do not depend
+    on the other levels, so the traits and scores give the choice of any other rule over the
+    levels without training again.
     """
     sets = X if isinstance(X, list | tuple) else [X]
     groups = np.asarray(groups)
@@ -78,12 +80,14 @@ def select_noise_level(make_model, X, groups, environment, n_traits, subsets=Non
                 held_out.append(fold == split)
     shape = (n_subsets, len(sets), n_traits, n_splits, len(levels))
     scores = np.zeros(shape)
+    scales = np.zeros((n_subsets, len(sets)))
     traits = np.zeros(shape + (len(groups),), dtype=np.float32)
     for k, measurements in enumerate(sets):
         measurements = np.asarray(measurements)
         x = torch.as_tensor(measurements, dtype=torch.float32)
         scale = [noise_scale(measurements[subset].reshape((subset.sum(), -1)))
                  for subset in subsets]
+        scales[:, k] = scale
         sd = [levels[a] * scale[i] for i, _, a in copies]
         earlier = [np.zeros((len(groups), 0)) for _ in copies]
         for t in range(n_traits):
@@ -105,6 +109,7 @@ def select_noise_level(make_model, X, groups, environment, n_traits, subsets=Non
                     trait[rows], groups[rows], environment[rows],
                     None if subgroups is None else subgroups[rows], estimator)[0]
     chosen = np.array([best_level(levels, scores[i]) for i in range(n_subsets)])
+    noise_sd = chosen[:, None] * scales
     if not isinstance(X, list | tuple):
-        scores, traits = scores[:, 0], traits[:, 0]
-    return chosen, scores, traits
+        noise_sd, scores, traits = noise_sd[:, 0], scores[:, 0], traits[:, 0]
+    return noise_sd, scores, traits

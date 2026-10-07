@@ -206,8 +206,9 @@ class MaxHeritabilityFeatures:
     """Greedily select the n_traits most heritable measurements (features) on training individuals.
 
     After each pick, the chosen measurement is projected out of all others before the next pick.
-    transform returns the selected measurements, centered and made uncorrelated on the training
-    individuals.
+    A measurement that is constant, or whose residual falls below 1e-8 of its centered norm (it
+    lies in the span of the picks), is never picked. transform returns the selected measurements,
+    centered and made uncorrelated on the training individuals.
     """
 
     def __init__(self, n_traits):
@@ -217,21 +218,21 @@ class MaxHeritabilityFeatures:
         X = np.asarray(X, dtype=float)
         groups = np.asarray(groups)
         X_fit = X - X.mean(axis=0)
+        norms = np.linalg.norm(X_fit, axis=0)
+        alive = norms > 0
         chosen = []
         for _ in range(self.n_traits):
-            heritability = anova_heritability(X_fit, groups, environment)
+            heritability = np.zeros(X.shape[1])
+            heritability[alive] = anova_heritability(X_fit[:, alive], groups, environment)
             heritability[np.isnan(heritability)] = 0
-            heritability[np.array(chosen, dtype=int)] = 0
+            heritability[~alive] = -np.inf
             best = int(np.argmax(heritability))
             chosen.append(best)
 
             u = np.copy(X_fit[:, best])
             X_fit = X_fit - np.outer(u, (u @ X_fit) / (u @ u))
-            # columns that became constant (including the chosen one) are replaced by a constant 1
-            scale = np.sum(np.abs(X_fit), axis=0)
-            X_fit[:, np.isnan(scale)] = 1
-            X_fit[:, scale < 1e-10] = 1
-            X_fit[:, best] = 1
+            alive &= np.linalg.norm(X_fit, axis=0) > 1e-8 * norms
+            alive[best] = False
 
         self.features_ = np.array(chosen)
         decorrelation = Decorrelation().fit(X[:, self.features_])

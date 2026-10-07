@@ -9,14 +9,15 @@ def test_select_noise_level_chooses_one_level_by_held_out_heritability(sorghum):
     X, groups, environment = sorghum
     X = X[:, ::20]
     levels = (0.0, 0.1)
-    chosen, scores, traits = selection.select_noise_level(lambda: h2opt.LinearModel(X.shape[1]),
-                                                          X, groups, environment, 2,
-                                                          levels=levels, n_splits=2, n_folds=3,
-                                                          n_iter=100)
-    assert chosen.shape == (1,) and scores.shape == (1, 2, 2, 2)
+    noise_sd, scores, traits = selection.select_noise_level(
+        lambda: h2opt.LinearModel(X.shape[1]), X, groups, environment, 2, levels=levels,
+        n_splits=2, n_folds=3, n_iter=100)
+    assert noise_sd.shape == (1,) and scores.shape == (1, 2, 2, 2)
     assert traits.shape == (1, 2, 2, 2, len(groups))
     assert np.isfinite(scores).all()
-    assert chosen[0] == levels[int(np.argmax(scores[0].mean(axis=(0, 1))))]
+    chosen = levels[int(np.argmax(scores[0].mean(axis=(0, 1))))]
+    assert selection.best_level(levels, scores[0]) == chosen
+    assert noise_sd[0] == pytest.approx(chosen * selection.noise_scale(X))
     # the saved traits 1 and 2 of split 0 at level 1 give the score of trait 2 again
     fold = folds.group_folds(groups, 3)
     fit, val = fold != 0, fold == 0
@@ -57,10 +58,13 @@ def test_select_noise_level_on_several_measurement_sets_averages_their_scores(so
     def make_model():
         return h2opt.LinearModel(first_set.shape[1])
 
-    chosen, both, traits = selection.select_noise_level(make_model, [first_set, second_set],
-                                                        groups, environment, 1, **options)
+    noise_sd, both, traits = selection.select_noise_level(make_model, [first_set, second_set],
+                                                          groups, environment, 1, **options)
     _, first, _ = selection.select_noise_level(make_model, first_set, groups, environment, 1,
                                                **options)
     assert both.shape == (1, 2, 1, 2, 2) and traits.shape == (1, 2, 1, 2, 2, len(groups))
     np.testing.assert_allclose(both[:, 0], first, atol=1e-4)
-    assert chosen[0] == options['levels'][int(np.argmax(both[0].mean(axis=(0, 1, 2))))]
+    chosen = options['levels'][int(np.argmax(both[0].mean(axis=(0, 1, 2))))]
+    # one level for both sets, each scaled by its own noise_scale
+    np.testing.assert_allclose(noise_sd, [[chosen * selection.noise_scale(first_set),
+                                           chosen * selection.noise_scale(second_set)]])

@@ -18,7 +18,7 @@ def test_test_individuals_do_not_shape_training(sorghum):
         torch.manual_seed(0)
         model = h2opt.TraitModels(3, h2opt.LinearModel, X.shape[1])
         h2opt.train(model, measurements, groups, environment, train_test, n_traits=3, n_iter=20,
-                    learning_rate=1e-3, noise_level=0.005, verbose=False)
+                    learning_rate=1e-3, noise_sd=0.005, verbose=False)
         weights.append(torch.cat([m.lin1.weight for m in model.models]).detach())
     torch.testing.assert_close(weights[0], weights[1], rtol=0, atol=0)
     traits = h2opt.synthetic_traits(model, changed, train_test == 0)
@@ -37,7 +37,7 @@ def test_train_increases_heritability(sorghum):
 
     before = heritability()
     h2opt.train(model, X, groups, environment, np.zeros(len(groups), dtype=int), n_iter=50,
-                learning_rate=1e-3, noise_level=0.005, verbose=False)
+                learning_rate=1e-3, noise_sd=0.005, verbose=False)
     assert heritability() > before
 
 
@@ -47,7 +47,7 @@ def test_train_with_normal_noise_and_no_clip(sorghum):
     torch.manual_seed(0)
     model = h2opt.TraitModels(2, h2opt.LinearModel, X.shape[1])
     h2opt.train(model, X, groups, environment, np.zeros(len(groups), dtype=int), n_traits=2,
-                n_iter=20, learning_rate=1e-3, noise_level=0.02, noise='normal',
+                n_iter=20, learning_rate=1e-3, noise_sd=0.02,
                 verbose=False)
     traits = model(torch.tensor(X).float()).detach()
     assert torch.isfinite(traits).all()
@@ -76,7 +76,7 @@ def test_adam_reaches_the_pch_trait(sorghum):
     torch.manual_seed(0)
     model = h2opt.TraitModels(1, h2opt.LinearModel, X.shape[1])
     h2opt.train(model, X, groups, environment, np.zeros(len(groups), dtype=int), n_iter=10000,
-                noise_level=s, noise='normal', verbose=False)
+                noise_sd=s, verbose=False)
     trait = h2opt.synthetic_traits(model, X, np.ones(len(groups), dtype=bool))[:, 0]
     assert abs(np.corrcoef(trait, pch.transform(X)[:, 0])[0, 1]) > 0.9999
 
@@ -93,7 +93,7 @@ def test_adam_reaches_the_henderson3_pch_trait(sorghum):
     torch.manual_seed(0)
     model = h2opt.TraitModels(1, h2opt.LinearModel, X.shape[1])
     h2opt.train(model, X, groups, environment, np.zeros(len(groups), dtype=int), n_iter=10000,
-                noise_level=s, noise='normal', verbose=False, subgroups=subgroups,
+                noise_sd=s, verbose=False, subgroups=subgroups,
                 estimator='henderson3')
     trait = h2opt.synthetic_traits(model, X, np.ones(len(groups), dtype=bool))[:, 0]
     assert abs(np.corrcoef(trait, pch.transform(X)[:, 0])[0, 1]) > 0.9999
@@ -126,7 +126,7 @@ def test_rmsprop_and_unknown_optimizer(sorghum):
 
     before = heritability()
     h2opt.train(model, X, groups, environment, np.zeros(len(groups), dtype=int), n_iter=50,
-                optimizer='rmsprop', learning_rate=1e-3, noise_level=0.005, verbose=False)
+                optimizer='rmsprop', learning_rate=1e-3, noise_sd=0.005, verbose=False)
     assert heritability() > before
     with pytest.raises(ValueError):
         h2opt.train(model, X, groups, environment, np.zeros(len(groups), dtype=int), n_iter=1,
@@ -160,15 +160,15 @@ def test_train_batch_copies_with_shared_rows_train_as_alone(sorghum):
     assert abs(np.corrcoef(*outputs(together))[0, 1]) < 0.9999
 
 
-def test_train_takes_one_noise_level_per_trait(sorghum):
+def test_train_takes_one_noise_sd_per_trait(sorghum):
     X, groups, environment = sorghum
     X = X[:, ::20]
     model = h2opt.TraitModels(2, h2opt.LinearModel, X.shape[1])
     h2opt.train(model, X, groups, environment, np.zeros(len(groups), dtype=int), n_traits=2,
-                n_iter=5, noise_level=[0.0, 0.01], noise='normal', verbose=False)
+                n_iter=5, noise_sd=[0.0, 0.01], verbose=False)
     with pytest.raises(ValueError):
         h2opt.train(model, X, groups, environment, np.zeros(len(groups), dtype=int), n_traits=2,
-                    n_iter=1, noise_level=[0.0, 0.01, 0.1], verbose=False)
+                    n_iter=1, noise_sd=[0.0, 0.01, 0.1], verbose=False)
 
 
 def test_train_batch_linear_model_matches_the_generic_path(sorghum):
@@ -196,10 +196,10 @@ def test_train_models_trains_each_model_as_alone(sorghum):
     start = h2opt.TraitModels(2, h2opt.LinearModel, X.shape[1])
     together = [copy.deepcopy(start) for _ in splits]
     h2opt.train_models(together, X, groups, environment, splits, n_traits=2, n_iter=50,
-                       noise_levels=0.0, verbose=False)
+                       noise_sd=0.0, verbose=False)
     for model, train_test in zip(together, splits, strict=True):
         alone = h2opt.train(copy.deepcopy(start), X, groups, environment, train_test, n_traits=2,
-                            n_iter=50, noise_level=0.0, verbose=False)
+                            n_iter=50, noise_sd=0.0, verbose=False)
         is_train = train_test == 0
         np.testing.assert_allclose(h2opt.synthetic_traits(model, X, is_train),
                                    h2opt.synthetic_traits(alone, X, is_train), atol=1e-4)
