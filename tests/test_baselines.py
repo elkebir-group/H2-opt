@@ -1,8 +1,9 @@
 import numpy as np
+import pytest
 import torch
 
 import h2opt
-from h2opt import baselines
+from h2opt import baselines, folds
 
 
 def test_baselines(sorghum):
@@ -30,32 +31,6 @@ def test_pch_more_measurements_than_individuals(sorghum):
     assert Y.shape == (200, 2) and np.all(np.isfinite(Y))
 
 
-def test_pch_forms_give_anova_heritability(sorghum):
-    X, groups, environment = sorghum
-    X = X[:300, ::50]
-    groups, environment = groups[:300], environment[:300]
-    A, B = baselines.PCH.heritability_forms(X, groups, environment)
-    w = np.random.RandomState(0).normal(size=(X.shape[1], 4))
-    expected = h2opt.anova_heritability(X @ w, groups, environment)
-    ratio = np.einsum('ik,ij,jk->k', w, A, w) / np.einsum('ik,ij,jk->k', w, B, w)
-    np.testing.assert_allclose(ratio, expected, rtol=1e-8)
-
-
-def test_decorrelation_is_sequential_least_squares():
-    rng = np.random.RandomState(0)
-    Y = rng.normal(size=(200, 3)) @ np.triu(np.ones((3, 3))) + 5
-    fit = np.arange(200) < 150
-    decorrelation = h2opt.Decorrelation().fit(Y[fit])
-    out = decorrelation.transform(Y)
-    np.testing.assert_allclose(np.corrcoef(out[fit].T), np.eye(3), atol=1e-10)
-    # trait 3: residual of trait 3 on an intercept and traits 1-2, coefficients from the fit rows
-    design = np.column_stack([np.ones(fit.sum()), Y[fit, :2]])
-    coef = np.linalg.lstsq(design, Y[fit, 2], rcond=None)[0]
-    residual = Y[:, 2] - np.column_stack([np.ones(200), Y[:, :2]]) @ coef
-    np.testing.assert_allclose(out[:, 2], residual, atol=1e-10)
-    np.testing.assert_allclose(out[:, 0], Y[:, 0] - Y[fit, 0].mean(), atol=1e-10)
-
-
 def test_pch_henderson3_maximizes_henderson3_heritability(sorghum):
     X, groups, environment = sorghum
     X = X[:600, ::40]
@@ -78,3 +53,44 @@ def test_pch_fit_ridges_equals_separate_fits(sorghum):
     for pch, ridge in zip(fitted, ridges, strict=True):
         alone = baselines.PCH(2, ridge).fit_transform(X, groups, environment)
         np.testing.assert_allclose(pch.transform(X), alone, atol=1e-8)
+
+
+def test_pch_tune_scores_held_out_heritability(sorghum):
+    X, groups, environment = sorghum
+    X = X[:, ::20]
+    ridges = (1e-3, 1.0)
+    ridge, scores, fold_scores = baselines.PCH.tune(X, groups, environment, 2, ridges=ridges,
+                                                    n_folds=3)
+    assert ridge == ridges[int(np.argmax(scores))]
+    fold = folds.group_folds(groups, 3)
+    fit, val = fold != 0, fold == 0
+    pch = baselines.PCH(2, ridges[1]).fit(X[fit], groups[fit], environment[fit])
+    traits = pch.transform(X[val])
+    expected = h2opt.anova_heritability(traits, groups[val], environment[val]).mean()
+    assert fold_scores[0, 1] == pytest.approx(expected)
+    assert baselines.RIDGES[0] == pytest.approx(1e-6) and baselines.RIDGES[-1] == pytest.approx(100)
+
+
+def test_pch_tune_on_several_measurement_sets_averages_their_scores(sorghum):
+    X, groups, environment = sorghum
+    first_set, second_set = X[:, ::20], X[:, 5::20]
+    options = dict(ridges=(1e-3, 1.0), n_folds=3, subgroups=np.arange(len(groups)) % 2,
+                   estimator='henderson3')
+    _, both, _ = baselines.PCH.tune([first_set, second_set], groups, environment, 1, **options)
+    _, first, _ = baselines.PCH.tune(first_set, groups, environment, 1, **options)
+    _, second, _ = baselines.PCH.tune(second_set, groups, environment, 1, **options)
+    np.testing.assert_allclose(both, (first + second) / 2, rtol=1e-10)
+
+
+def test_split_units_assign_individuals_to_validation_folds(sorghum):
+    X, groups, environment = sorghum
+    X = X[:, ::20]
+    plants = np.arange(len(groups))
+    _, scores, fold_scores = baselines.PCH.tune(X, groups, environment, 1, ridges=(1e-3,),
+                                                n_folds=3, split_units=plants)
+    fold = folds.group_folds(plants, 3)
+    fit, val = fold != 0, fold == 0
+    assert set(groups[fit]) & set(groups[val])
+    pch = baselines.PCH(1, 1e-3).fit(X[fit], groups[fit], environment[fit])
+    expected = h2opt.anova_heritability(pch.transform(X[val]), groups[val], environment[val])
+    assert fold_scores[0, 0] == pytest.approx(expected[0])

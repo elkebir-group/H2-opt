@@ -33,14 +33,9 @@ class Decorrelation:
 def orthonormal_basis(B):
     """Orthonormal basis of the space spanned by the centered columns of the (n, k) tensor B.
 
-    k may be 0. Use it with residualize."""
+    k may be 0."""
     if B.shape[1] == 0:
         return B
     return torch.linalg.qr(B - B.mean(axis=0))[0]
 
 
-def residualize(Y, basis):
-    """Residual of each column of the tensor Y after least-squares regression on an intercept and
-    the columns that basis (from orthonormal_basis) spans. Differentiable in Y."""
-    Y = Y - Y.mean(axis=0)
-    return Y - basis @ (basis.T @ Y)

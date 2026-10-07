@@ -10,8 +10,15 @@ the centered training data, so the number of measurements may far exceed the num
 import numpy as np
 
 from .decorrelation import Decorrelation
-from .heritability import Henderson3, _as_environment, anova_heritability, heritability
-from .selection import RIDGES, cross_validate
+from .folds import cross_validate
+from .heritability import _as_environment, anova_heritability, heritability, heritability_design
+from .selection import NOISE_LEVELS
+
+# Ridges of PCH: the squares of H2-opt's noise levels (1e-6 to 100). PCH penalizes
+# ridge * v * |w|^2 with v the mean variance of the measurements, the penalty that normal input
+# noise of standard deviation sqrt(ridge * v) adds to a linear trait, so ridge s^2 matches H2-opt
+# at noise level s.
+RIDGES = tuple(s**2 for s in NOISE_LEVELS)
 
 
 def _group_center(Z, labels):
@@ -148,13 +155,8 @@ class PCH(LinearBaseline):
         X, Xc, V, Z = start._coordinates(X)
         groups = np.asarray(groups)
         environment = _as_environment(environment, len(groups))
-        if estimator == 'anova':
-            if subgroups is not None:
-                raise ValueError("subgroups need estimator='henderson3'")
-            A, B = cls.heritability_forms(Z, groups, environment)
-        else:
-            A, B = Henderson3(groups, environment, subgroups).forms()
-            A, B = Z.T @ A @ Z, Z.T @ B @ Z
+        A, B = heritability_design(estimator, groups, environment, subgroups).forms()
+        A, B = Z.T @ A @ Z, Z.T @ B @ Z
         fitted = []
         for ridge in ridges:
             pch = cls(n_traits, ridge, estimator)
@@ -169,7 +171,7 @@ class PCH(LinearBaseline):
         """Choose the ridge by cross-validated heritability.
 
         For each fold of the groups (or of the split_units, labels of the individuals, as in
-        h2opt.selection.select_noise_level; h2opt.selection.cross_validate) and each ridge, PCH
+        h2opt.selection.select_noise_level; h2opt.folds.cross_validate) and each ridge, PCH
         is fitted on the other folds and scored by the mean heritability (by the same estimator)
         of its traits on the held-out fold. X is one (n, p) array, or a list of arrays of the same
         individuals (e.g. one per date); then one ridge serves all of them, PCH is fitted to each,
@@ -198,22 +200,6 @@ class PCH(LinearBaseline):
         units = groups if split_units is None else split_units
         scores, fold_scores = cross_validate(units, score_fold, n_folds, seed)
         return ridges[int(np.argmax(scores))], scores, fold_scores
-
-    @staticmethod
-    def heritability_forms(Z, groups, environment=None):
-        """Matrices A and B with w'A w / w'B w = anova_heritability(Z w) for every w."""
-        environment = _as_environment(environment, len(groups))
-        _, inverse, counts = np.unique(groups, return_inverse=True, return_counts=True)
-        keep = counts[inverse] >= 2
-        Zc = Z[keep] - Z[keep].mean(axis=0)
-        Ze = Zc
-        for a in range(environment.shape[1]):
-            Ze = _group_center(Ze, environment[keep, a])
-        R = _group_center(Ze, groups[keep])
-        _, inverse_kept, counts_kept = np.unique(groups[keep], return_inverse=True,
-                                                 return_counts=True)
-        scale = (counts_kept / (counts_kept - 1.0))[inverse_kept]
-        return Ze.T @ Ze - R.T @ (R * scale[:, None]), Zc.T @ Zc
 
 
 class MaxHeritabilityFeatures:

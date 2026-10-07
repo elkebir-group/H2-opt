@@ -71,3 +71,14 @@ def test_henderson3_rows_give_each_column_its_own_individuals():
         r = rows[:, j]
         alone = h2opt.Henderson3(groups[r], environment[r], subgroups[r]).heritability(Y[r, j])
         assert together[j].item() == pytest.approx(alone.item(), rel=1e-10)
+
+
+def test_anova_forms_give_its_heritability(sorghum):
+    X, groups, environment = sorghum
+    X, groups, environment = X[:300, ::50], groups[:300], environment[:300]
+    A, B = h2opt.AnovaDesign(groups, environment).forms()
+    w = np.random.RandomState(0).normal(size=(X.shape[1], 4))
+    Y = X @ w
+    expected = h2opt.anova_heritability(Y, groups, environment)
+    ratio = np.einsum('ik,ij,jk->k', Y, A, Y) / np.einsum('ik,ij,jk->k', Y, B, Y)
+    np.testing.assert_allclose(ratio, expected, rtol=1e-8)

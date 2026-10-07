@@ -1,5 +1,4 @@
-"""Heritability (ANOVA, Henderson's Method III) and genetic covariance of traits, differentiable in
-PyTorch."""
+"""Heritability of traits (ANOVA, Henderson's Method III), differentiable in PyTorch."""
 
 import numpy as np
 import torch
@@ -65,7 +64,7 @@ class AnovaDesign:
             self._keep_float[dtype] = self._keep.to(dtype)
         return self._keep_float[dtype]
 
-    def heritability(self, Y, return_variance=False, env_adjusted_total=False):
+    def heritability(self, Y, return_variance=False):
         """See anova_heritability."""
         mask = self.keep(Y.dtype)
         n = mask.sum(axis=0)
@@ -77,9 +76,7 @@ class AnovaDesign:
         if len(self.environment) == 0:
             variance_env = variance_total
         else:
-            for codes, n_codes in self.environment:
-                Y2 = _center_by(Y2, mask, codes, n_codes)
-            Y2 = (Y2 - Y2.sum(axis=0) / n) * mask
+            Y2 = self._remove_environment(Y2, mask, n)
             variance_env = torch.sum(Y2 ** 2, axis=0)
 
         sums = _segment_sum(Y2, self.groups, self.n_groups)
@@ -88,40 +85,38 @@ class AnovaDesign:
         within = (sums_sq - sums ** 2 / sizes.clamp(min=1)) * (sizes / (sizes - 1).clamp(min=1))
         variance_within = torch.sum(within, axis=0)
 
-        if env_adjusted_total:
-            variance_total = variance_env
-
         if return_variance:
             return (variance_env - variance_within) / n, variance_total / n
         return (variance_env - variance_within) / variance_total
 
+    def _remove_environment(self, Y, mask, n):
+        """Centered Y (0 outside mask) minus the means of each environmental variable in turn,
+        centered again."""
+        for codes, n_codes in self.environment:
+            Y = _center_by(Y, mask, codes, n_codes)
+        return (Y - Y.sum(axis=0) / n) * mask
 
-def grouped_variance(Y, groups):
-    """Sum over groups of the unbiased within-group sum of squares, per column of Y.
+    def forms(self):
+        """(n, n) arrays A and B with y'A y / y'B y = heritability(y), for a design without rows.
 
-    Every group must have at least two members.
-    """
-    codes, n_codes = _codes(groups, Y.device)
-    ones = torch.ones((Y.shape[0], 1), dtype=Y.dtype, device=Y.device)
-    sizes = _segment_sum(ones, codes, n_codes)
-    within = _segment_sum(Y ** 2, codes, n_codes) - _segment_sum(Y, codes, n_codes) ** 2 / sizes
-    return torch.sum(within * (sizes / (sizes - 1)), axis=0)
-
-
-def remove_environment(Y, environment):
-    """Subtract the mean of each environmental group, one environmental variable at a time.
-
-    Returns a new tensor; Y is not modified.
-    """
-    environment = _as_environment(environment, Y.shape[0])
-    ones = torch.ones((Y.shape[0], 1), dtype=Y.dtype, device=Y.device)
-    for a in range(environment.shape[1]):
-        Y = _center_by(Y, ones, *_codes(environment[:, a], Y.device))
-    return Y
+        B gives the total variance of y, A the variance left after removing the environment minus
+        the within-group variance (both times the number of individuals that count).
+        """
+        if self._keep.shape[1] != 1:
+            raise ValueError('forms needs a design of all individuals (no rows)')
+        mask = self.keep(torch.float64)
+        n = mask.sum(axis=0)
+        identity = torch.eye(mask.shape[0], dtype=torch.float64, device=mask.device)
+        centered = (identity - mask.T / n) * mask
+        adjusted = self._remove_environment(centered, mask, n)
+        sizes = _segment_sum(mask, self.groups, self.n_groups)[self.groups]
+        within = _center_by(adjusted, mask, self.groups, self.n_groups)
+        within = within * (sizes / (sizes - 1).clamp(min=1)) ** 0.5
+        A = adjusted.T @ adjusted - within.T @ within
+        return A.cpu().numpy(), (centered.T @ centered).cpu().numpy()
 
 
-def anova_heritability(Y, groups, environment=None, return_variance=False,
-                       env_adjusted_total=False):
+def anova_heritability(Y, groups, environment=None, return_variance=False):
     """ANOVA heritability of each column of the (n, k) tensor or array Y.
 
     groups: length-n labels of genetically related groups (e.g. clones or families).
@@ -130,52 +125,18 @@ def anova_heritability(Y, groups, environment=None, return_variance=False,
     The heritability is (V_env - V_within) / V_total, where V_env is the variance left after
     removing environmental group means and V_within the within-group variance. With clonal groups
     this is broad-sense heritability; for groups with genetic relatedness r, divide by r for
-    narrow-sense. Groups with a single member are dropped. With env_adjusted_total, the denominator
-    is V_env. With return_variance, returns (genetic variance, total variance) per individual
-    instead. For repeated calls on the same individuals, use AnovaDesign.
+    narrow-sense. Groups with a single member are dropped. With return_variance, returns (genetic
+    variance, total variance) per individual instead. For repeated calls on the same individuals,
+    use AnovaDesign.
 
     A tensor gives tensors (differentiable in Y); an array is computed in float64 and gives arrays.
     """
     if isinstance(Y, torch.Tensor):
         design = AnovaDesign(groups, environment, Y.device)
-        return design.heritability(Y, return_variance, env_adjusted_total)
+        return design.heritability(Y, return_variance)
     Y = torch.tensor(np.asarray(Y, dtype=np.float64))
-    result = AnovaDesign(groups, environment).heritability(Y, return_variance, env_adjusted_total)
+    result = AnovaDesign(groups, environment).heritability(Y, return_variance)
     return tuple(r.numpy() for r in result) if return_variance else result.numpy()
-
-
-def genetic_covariance(Y, N, groups, environment=None, correlation=False):
-    """Genetic covariance between each column of Y and N (one trait, or one per column of Y).
-
-    Both are standardized first. Estimated from the genetic variances of Y, N and Y + N.
-    With correlation, negative genetic variances are set to zero and the covariance is
-    divided by the genetic standard deviations (0 where either variance is 0).
-    """
-    if N.dim() == 1:
-        N = N.reshape((N.shape[0], 1))[:, np.zeros(Y.shape[1], dtype=int)]
-
-    N = N - torch.mean(N, axis=0).reshape((1, -1))
-    N = N / (torch.mean(N ** 2, axis=0) ** 0.5).reshape((1, -1))
-    Y = Y - torch.mean(Y, axis=0).reshape((1, -1))
-    Y = Y / (torch.mean(Y ** 2, axis=0) ** 0.5).reshape((1, -1))
-
-    var_Y, _ = anova_heritability(Y, groups, environment, return_variance=True)
-    var_N, _ = anova_heritability(N, groups, environment, return_variance=True)
-    var_YN, _ = anova_heritability(Y + N, groups, environment, return_variance=True)
-
-    if correlation:
-        var_Y[var_Y < 0] = 0
-        var_N[var_N < 0] = 0
-        var_YN[var_YN < 0] = 0
-
-    covariance = (var_YN - var_Y - var_N) / 2
-
-    if correlation:
-        covariance = covariance / ((var_Y * var_N) ** 0.5)
-        covariance[var_Y == 0] = 0
-        covariance[var_N == 0] = 0
-
-    return covariance
 
 
 def _dummies(labels, drop_first=False):
@@ -283,15 +244,9 @@ class Henderson3:
         norms = [((U.T @ Y) ** 2).sum(0) for U in bases] + [(Y ** 2).sum(0)]
         return torch.stack([norms[i + 1] - norms[i] for i in range(len(bases))])
 
-    def heritability(self, Y, denominator='total'):
-        """Group variance over a denominator.
-
-        The denominator is the total variance of Y ('total', as anova_heritability) or the sum of
-        the variance components ('components', the mixed-model convention).
-        """
+    def heritability(self, Y):
+        """Group variance over the total variance of Y (as anova_heritability)."""
         components = self.components(Y)
-        if denominator == 'components':
-            return components[0] / components.sum(0)
         Y = Y.to(torch.float64)
         if Y.dim() == 1:
             Y = Y[:, None]
@@ -302,7 +257,7 @@ class Henderson3:
         return components[0] / variance
 
     def forms(self):
-        """(n, n) arrays A and B with y'A y / y'B y = heritability(y) (denominator 'total'), for a
+        """(n, n) arrays A and B with y'A y / y'B y = heritability(y), for a
         design without rows.
 
         A gives the group variance, a fixed combination of the y'Q y; B the variance of y.
@@ -320,17 +275,21 @@ class Henderson3:
 ESTIMATORS = ('anova', 'henderson3')
 
 
-def heritability(Y, groups, environment=None, subgroups=None, estimator='anova'):
-    """Heritability of each column of the (n, k) array Y by an estimator of ESTIMATORS.
-
-    'anova' is anova_heritability (subgroups must be None); 'henderson3' is
-    Henderson3(groups, environment, subgroups).heritability. Computed in float64; returns an array.
-    """
-    Y = np.asarray(Y, dtype=np.float64)
+def heritability_design(estimator, groups, environment=None, subgroups=None, device='cpu',
+                        rows=None):
+    """The design of an estimator of ESTIMATORS: AnovaDesign for 'anova' (subgroups must be None)
+    or Henderson3 for 'henderson3'. Raises ValueError for any other estimator."""
     if estimator == 'anova':
         if subgroups is not None:
             raise ValueError("subgroups need estimator='henderson3'")
-        return anova_heritability(Y, groups, environment)
+        return AnovaDesign(groups, environment, device, rows=rows)
     if estimator == 'henderson3':
-        return Henderson3(groups, environment, subgroups).heritability(torch.tensor(Y)).numpy()
+        return Henderson3(groups, environment, subgroups, device, rows=rows)
     raise ValueError(f'estimator must be one of {ESTIMATORS}, not {estimator!r}')
+
+
+def heritability(Y, groups, environment=None, subgroups=None, estimator='anova'):
+    """Heritability of each column of the (n, k) array Y by an estimator of ESTIMATORS
+    (heritability_design). Computed in float64; returns an array."""
+    Y = torch.tensor(np.asarray(Y, dtype=np.float64))
+    return heritability_design(estimator, groups, environment, subgroups).heritability(Y).numpy()

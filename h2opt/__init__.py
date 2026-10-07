@@ -1,20 +1,18 @@
 """H2-opt: self-supervised discovery of heritable traits in high-throughput phenotyping data."""
 
-from . import baselines, selection
+from . import baselines, folds, selection
 from .decorrelation import Decorrelation
 from .heritability import (
     ESTIMATORS,
     AnovaDesign,
     Henderson3,
     anova_heritability,
-    genetic_covariance,
-    grouped_variance,
     heritability,
-    remove_environment,
+    heritability_design,
 )
 from .io import load_npz
-from .models import AutoEncoder, ConvModel, ImageConvModel, LinearModel, TraitModels
-from .simulate import encode_latent, latent_scale
+from .models import ConvModel, ImageConvModel, LinearModel, TraitModels
+from .simulate import AutoEncoder, encode_latent, latent_scale
 from .train import synthetic_traits, train, train_batch, train_models
 
 __all__ = [
@@ -29,14 +27,13 @@ __all__ = [
     "TraitModels",
     "anova_heritability",
     "baselines",
+    "folds",
     "selection",
     "encode_latent",
-    "genetic_covariance",
-    "grouped_variance",
     "heritability",
+    "heritability_design",
     "latent_scale",
     "load_npz",
-    "remove_environment",
     "synthetic_traits",
     "train",
     "train_batch",

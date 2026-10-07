@@ -8,7 +8,7 @@ import torch
 from torch.func import functional_call, stack_module_state, vmap
 
 from .decorrelation import Decorrelation, orthonormal_basis
-from .heritability import AnovaDesign, Henderson3, heritability
+from .heritability import heritability, heritability_design
 from .models import LinearModel
 
 
@@ -107,9 +107,10 @@ def train_batch(models, X, groups, environment, train_rows, noise_levels, earlie
     used = np.any(train_rows, axis=0)
     train_rows = train_rows[:, used]
     X = X[torch.as_tensor(used, device=device)]
-    design = _design(groups[used], environment[used] if environment is not None else None,
-                     None if subgroups is None else np.asarray(subgroups)[used], estimator,
-                     device, train_rows.T)
+    design = heritability_design(estimator, groups[used],
+                                 environment[used] if environment is not None else None,
+                                 None if subgroups is None else np.asarray(subgroups)[used],
+                                 device, train_rows.T)
     # residuals and their scale are over all training rows; the heritability drops singleton groups
     mask = torch.tensor(train_rows.T, dtype=torch.float32, device=device)
     n_train = mask.sum(axis=0)
@@ -192,18 +193,17 @@ def train_batch(models, X, groups, environment, train_rows, noise_levels, earlie
     return models
 
 
-def train(model, X, groups, environment, train_test, model_file=None, n_traits=1, first_trait=0,
-          n_iter=10000, optimizer='adam', learning_rate=1e-3, noise_level=0.1, noise='uniform',
+def train(model, X, groups, environment, train_test, model_file=None, n_traits=1, n_iter=10000,
+          optimizer='adam', learning_rate=1e-3, noise_level=0.1, noise='normal',
           clip=None, device='cpu', verbose=True, subgroups=None, estimator='anova',
           max_copies=None):
     """Train synthetic traits one at a time to maximize their heritability on training data.
 
     model: a TraitModels with at least n_traits traits; X: (n, m) measurements.
     groups, environment: as in anova_heritability. train_test: length-n array, 0 = train, 1 = test.
-    Traits first_trait..n_traits-1 are trained in order (traits before first_trait are taken as
-    already trained). In the loss, trait t is the residual of its output after least-squares
-    regression on the outputs of traits 0..t-1 on the training individuals, so the test
-    individuals never shape the objective. The final traits are
+    Traits 0..n_traits-1 are trained in order. In the loss, trait t is the residual of its output
+    after least-squares regression on the outputs of traits 0..t-1 on the training individuals, so
+    the test individuals never shape the objective. The final traits are
     synthetic_traits(model, X, train_test == 0); with verbose, the train and test heritability of
     each trait is printed when it is trained.
     Each step adds noise to the training measurements and maximizes the heritability.
@@ -213,10 +213,9 @@ def train(model, X, groups, environment, train_test, model_file=None, n_traits=1
     (RMSprop with a constant learning rate, the paper's optimizer). The heritability does not
     change with the scale of a trait, so RMSprop's steps shrink relative to the weights as the
     weights grow, and it converges slowly for correlated measurements; momentum and the decay fix
-    this. noise is 'uniform' (in [0, noise_level), the paper's sorghum setting) or 'normal'
-    (standard deviation noise_level, the paper's simulation setting). With clip, the standardized
-    traits are clipped to [-clip, clip] in the loss (the paper's sorghum setting was 2); by
-    default (None) the loss is the plain heritability, as in the paper's simulation.
+    this. noise is 'normal' (standard deviation noise_level, the default) or 'uniform' (in
+    [0, noise_level)). With clip, the standardized traits are clipped to [-clip, clip] in the
+    loss; by default (None) the loss is the plain heritability.
     estimator is 'anova' (anova_heritability) or 'henderson3' (Henderson3 with subgroups, e.g.
     plots of one family; h2opt.heritability.ESTIMATORS); it is optimized and reported.
     If model_file is given, the whole model is saved after each trait. This is train_models with
@@ -224,7 +223,7 @@ def train(model, X, groups, environment, train_test, model_file=None, n_traits=1
     """
     train_models([model], X, groups, environment, np.asarray(train_test)[None],
                  model_files=None if model_file is None else [model_file], n_traits=n_traits,
-                 first_trait=first_trait, n_iter=n_iter, optimizer=optimizer,
+                 n_iter=n_iter, optimizer=optimizer,
                  learning_rate=learning_rate, noise_levels=noise_level, noise=noise, clip=clip,
                  device=device, verbose=verbose, subgroups=subgroups, estimator=estimator,
                  max_copies=max_copies)
@@ -232,8 +231,8 @@ def train(model, X, groups, environment, train_test, model_file=None, n_traits=1
 
 
 def train_models(models, X, groups, environment, train_test, model_files=None, n_traits=1,
-                 first_trait=0, n_iter=10000, optimizer='adam', learning_rate=1e-3,
-                 noise_levels=0.1, noise='uniform', clip=None, device='cpu', verbose=True,
+                 n_iter=10000, optimizer='adam', learning_rate=1e-3,
+                 noise_levels=0.1, noise='normal', clip=None, device='cpu', verbose=True,
                  subgroups=None, estimator='anova', max_copies=None):
     """Train several TraitModels at once, each as by train with its own data split and noise.
 
@@ -254,7 +253,7 @@ def train_models(models, X, groups, environment, train_test, model_files=None, n
     for model in models:
         model.to(device)
 
-    for trait in range(first_trait, n_traits):
+    for trait in range(n_traits):
         earlier = []
         for model in models:
             with torch.no_grad():
@@ -281,13 +280,3 @@ def train_models(models, X, groups, environment, train_test, model_files=None, n
 
     return models
 
-
-def _design(groups, environment, subgroups, estimator, device, rows):
-    """Heritability design of the estimator (h2opt.heritability.ESTIMATORS) with per-column rows."""
-    if estimator == 'anova':
-        if subgroups is not None:
-            raise ValueError("subgroups need estimator='henderson3'")
-        return AnovaDesign(groups, environment, device, rows=rows)
-    if estimator == 'henderson3':
-        return Henderson3(groups, environment, subgroups, device, rows=rows)
-    raise ValueError(f"estimator must be 'anova' or 'henderson3', not {estimator!r}")
