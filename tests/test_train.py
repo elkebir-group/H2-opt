@@ -260,7 +260,8 @@ def test_train_linear_conv_models_starts_at_the_linear_traits():
                                    expected[:, 0] / expected[rows == 0, 0].std(), atol=1e-4)
         np.testing.assert_allclose(h2opt.synthetic_traits(model, images, rows == 0)[:, 1:],
                                    expected[:, 1:] / start_scale(reference, flat, rows), atol=1e-4)
-        assert torch.allclose(model.models[1].extra_noise_sd, torch.tensor(0.4))
+        assert torch.allclose(model.models[1].linear_noise_sd, torch.tensor(0.5))
+        assert torch.allclose(model.models[1].conv_noise_sd, torch.tensor(0.3))
     torch.manual_seed(0)
     models = h2opt.train_linear_conv_models(partial(h2opt.ImageConvModel, 2, 15), images, groups,
                                             None, train_test, 0.5, 0.3, n_iter=20, **options)

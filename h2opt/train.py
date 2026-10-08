@@ -301,9 +301,9 @@ def train_linear_conv_models(make_conv, X, groups, environment, train_test, line
        weight w and bias b of each linear trait. s is the standard deviation of the output of
        that linear trait on the training individuals of the model, so each trait starts at the
        linear trait with unit standard deviation. It is trained by train_models for n_iter steps
-       with input noise of standard deviation conv_noise_sd for both branches, and extra noise
-       for the linear branch: its total noise has standard deviation linear_noise_sd (or
-       conv_noise_sd if that is larger).
+       with no shared input noise: the linear branch draws noise of standard deviation
+       linear_noise_sd (as input noise), conv draws input noise of standard deviation
+       conv_noise_sd.
 
     make_conv: a function with no arguments that returns a new convolutional model, e.g.
     functools.partial(ImageConvModel, n_channels, image_size). X: the input of the convolutional
@@ -326,7 +326,6 @@ def train_linear_conv_models(make_conv, X, groups, environment, train_test, line
     train_models(linear, flat, groups, environment, train_test, n_iter=n_linear_iter,
                  noise_sd=linear_sd, **options)
 
-    extra_sd = np.sqrt(np.maximum(linear_sd ** 2 - conv_sd ** 2, 0))
     models = []
     for b in range(n_models):
         model = TraitModels(n_traits, make_conv)
@@ -337,7 +336,8 @@ def train_linear_conv_models(make_conv, X, groups, environment, train_test, line
             if s == 0:
                 raise ValueError(f'linear trait {t} of model {b} is constant on its training '
                                  'individuals')
-            model.models[t] = LinearConvModel(model.models[t], w / s, bias / s, extra_sd[b, t])
+            model.models[t] = LinearConvModel(model.models[t], w / s, bias / s, linear_sd[b, t],
+                                              conv_sd[b, t])
         models.append(model)
-    return train_models(models, X, groups, environment, train_test, n_iter=n_iter,
-                        noise_sd=conv_sd, **options)
+    return train_models(models, X, groups, environment, train_test, n_iter=n_iter, noise_sd=0.0,
+                        **options)

@@ -70,19 +70,20 @@ class LinearConvModel(nn.Module):
     individual. V starts at zero, and the constructor sets the weight and bias of conv.lin1 to
     zero, so the model starts at exactly the linear map x w^T + bias.
 
-    In training mode, the linear branch also gets normal noise of standard deviation
-    extra_noise_sd |w| per individual. For a linear map, this is the same as input noise of
-    standard deviation extra_noise_sd. With input noise of standard deviation s (from
-    train_batch), the linear branch thus sees noise of standard deviation
-    sqrt(s^2 + extra_noise_sd^2) and conv sees noise of standard deviation s.
+    In training mode, each branch draws its own noise, so the two branches can have any noise
+    levels: the linear branch gets normal noise of standard deviation linear_noise_sd |w| per
+    individual on its output, the same as input noise of standard deviation linear_noise_sd for a
+    linear map; conv gets normal input noise of standard deviation conv_noise_sd. Train it with
+    no input noise from train_batch (noise_sd 0).
     """
 
-    def __init__(self, conv, weight, bias, extra_noise_sd):
+    def __init__(self, conv, weight, bias, linear_noise_sd, conv_noise_sd):
         super().__init__()
         weight = torch.as_tensor(weight, dtype=torch.float32).reshape((1, -1))
         self.register_buffer('weight', weight)
         self.register_buffer('bias', torch.as_tensor(bias, dtype=torch.float32).reshape((1,)))
-        self.register_buffer('extra_noise_sd', torch.tensor(float(extra_noise_sd)))
+        self.register_buffer('linear_noise_sd', torch.tensor(float(linear_noise_sd)))
+        self.register_buffer('conv_noise_sd', torch.tensor(float(conv_noise_sd)))
         self.V = nn.Parameter(torch.zeros_like(weight))
         self.conv = conv
         nn.init.zeros_(conv.lin1.weight)
@@ -95,7 +96,8 @@ class LinearConvModel(nn.Module):
             # |w| as the root of a sum with a small constant: the gradient of the norm at w = 0
             # is NaN
             linear = linear + (torch.randn((x.shape[0], 1), device=x.device)
-                               * self.extra_noise_sd * torch.sqrt((w ** 2).sum() + 1e-12))
+                               * self.linear_noise_sd * torch.sqrt((w ** 2).sum() + 1e-12))
+            x = x + torch.randn_like(x) * self.conv_noise_sd
         return linear + self.conv(x)
 
 
