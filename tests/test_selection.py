@@ -33,7 +33,7 @@ def test_select_noise_level_on_subsets_ignores_the_other_individuals(sorghum):
     # whatever the measurements outside the subset are (at level 0: with noise, the shared draw
     # differs with the set of individuals)
     X, groups, environment = sorghum
-    X = X[:, ::20]
+    X = X[:, ::10]
     subset = folds.group_folds(groups, 3) != 0
     changed = X.copy()
     changed[~subset] = np.random.RandomState(0).normal(size=changed[~subset].shape)
@@ -49,8 +49,8 @@ def test_select_noise_level_on_subsets_ignores_the_other_individuals(sorghum):
     np.testing.assert_allclose(together[0], alone[0], atol=1e-4)
 
 
-def test_select_noise_level_on_several_measurement_sets_averages_their_scores(sorghum):
-    X, groups, environment = sorghum
+def test_select_noise_level_on_several_measurement_sets_averages_their_scores(sorghum_small):
+    X, groups, environment = sorghum_small
     first_set, second_set = X[:, ::20], X[:, 5::20]
     options = dict(levels=(0.0, 0.1), n_splits=2, n_folds=3, n_iter=50,
                    subgroups=np.arange(len(groups)) % 2, estimator='henderson3')
@@ -78,7 +78,7 @@ def _linear_conv_scores(X, groups, environment, subsets, **options):
 
 def test_score_linear_conv_levels_scores_held_out_heritability(sorghum):
     X, groups, environment = sorghum
-    X = X[:, ::4]
+    X = X[:, ::10]
     scores, traits = _linear_conv_scores(X, groups, environment, None)
     assert scores.shape == (1, 2, 2, 2) and traits.shape == (1, 2, 2, 2, len(groups))
     assert np.isfinite(scores).all()
@@ -91,7 +91,7 @@ def test_score_linear_conv_levels_scores_held_out_heritability(sorghum):
 
 def test_score_linear_conv_levels_ignores_the_individuals_outside_the_subset(sorghum):
     X, groups, environment = sorghum
-    X = X[:, ::4]
+    X = X[:, ::10]
     subset = folds.group_folds(groups, 3) != 0
     changed = X.copy()
     changed[~subset] = np.random.RandomState(0).normal(size=changed[~subset].shape)

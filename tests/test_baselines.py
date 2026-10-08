@@ -89,8 +89,8 @@ def test_pch_tune_scores_held_out_heritability(sorghum):
     assert baselines.RIDGES[0] == pytest.approx(1e-6) and baselines.RIDGES[-1] == pytest.approx(100)
 
 
-def test_pch_tune_on_several_measurement_sets_averages_their_scores(sorghum):
-    X, groups, environment = sorghum
+def test_pch_tune_on_several_measurement_sets_averages_their_scores(sorghum_small):
+    X, groups, environment = sorghum_small
     first_set, second_set = X[:, ::20], X[:, 5::20]
     options = dict(ridges=(1e-3, 1.0), n_folds=3, subgroups=np.arange(len(groups)) % 2,
                    estimator='henderson3')

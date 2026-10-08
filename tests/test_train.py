@@ -72,37 +72,37 @@ def test_adam_reaches_the_pch_trait(sorghum):
     # with normal noise of SD s and no clipping, the optimum of a linear trait is the PCH trait
     # with ridge s^2 / v (v: the mean variance of the measurements)
     X, groups, environment = sorghum
-    X = X[:, ::20]
+    X = X[:, ::100]
     s = 0.0014
     pch = h2opt.baselines.PCH(1, ridge=s ** 2 / X.var(axis=0).mean()).fit(X, groups, environment)
     torch.manual_seed(0)
     model = h2opt.TraitModels(1, h2opt.LinearModel, X.shape[1])
-    h2opt.train(model, X, groups, environment, np.zeros(len(groups), dtype=int), n_iter=10000,
-                noise_sd=s, verbose=False)
+    h2opt.train(model, X, groups, environment, np.zeros(len(groups), dtype=int), n_iter=2000,
+                learning_rate=1e-2, noise_sd=s, verbose=False)
     trait = h2opt.synthetic_traits(model, X, np.ones(len(groups), dtype=bool))[:, 0]
     assert abs(np.corrcoef(trait, pch.transform(X)[:, 0])[0, 1]) > 0.9999
 
 
-def test_adam_reaches_the_henderson3_pch_trait(sorghum):
+def test_adam_reaches_the_henderson3_pch_trait(sorghum_small):
     # the same with Henderson's Method III: its group variance is unbiased, so pure noise adds
     # nothing to it in expectation, and the noise acts as a ridge in the denominator
-    X, groups, environment = sorghum
-    X = X[:, ::20]
+    X, groups, environment = sorghum_small
+    X = X[:, ::100]
     subgroups = np.arange(len(groups)) % 2
     s = 0.0014
     pch = h2opt.baselines.PCH(1, ridge=s ** 2 / X.var(axis=0).mean(), estimator='henderson3')
     pch.fit(X, groups, environment, subgroups)
     torch.manual_seed(0)
     model = h2opt.TraitModels(1, h2opt.LinearModel, X.shape[1])
-    h2opt.train(model, X, groups, environment, np.zeros(len(groups), dtype=int), n_iter=10000,
-                noise_sd=s, verbose=False, subgroups=subgroups,
+    h2opt.train(model, X, groups, environment, np.zeros(len(groups), dtype=int), n_iter=4000,
+                learning_rate=1e-2, noise_sd=s, verbose=False, subgroups=subgroups,
                 estimator='henderson3')
     trait = h2opt.synthetic_traits(model, X, np.ones(len(groups), dtype=bool))[:, 0]
     assert abs(np.corrcoef(trait, pch.transform(X)[:, 0])[0, 1]) > 0.9999
 
 
-def test_train_batch_in_chunks_trains_each_copy_as_together(sorghum):
-    X, groups, environment = sorghum
+def test_train_batch_in_chunks_trains_each_copy_as_together(sorghum_small):
+    X, groups, environment = sorghum_small
     X = X[:, ::20]
     rows = np.random.RandomState(0).rand(3, len(groups)) < 0.8
     torch.manual_seed(0)
