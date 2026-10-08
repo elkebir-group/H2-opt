@@ -71,18 +71,18 @@ class LinearConvModel(nn.Module):
     zero, so the model starts at exactly the linear map x w^T + bias.
 
     In training mode, the linear branch also gets normal noise of standard deviation
-    linear_noise_sd |w| per individual. For a linear map, this is the same as input noise of
-    standard deviation linear_noise_sd. With input noise of standard deviation s (from
+    extra_noise_sd |w| per individual. For a linear map, this is the same as input noise of
+    standard deviation extra_noise_sd. With input noise of standard deviation s (from
     train_batch), the linear branch thus sees noise of standard deviation
-    sqrt(s^2 + linear_noise_sd^2) and conv sees noise of standard deviation s.
+    sqrt(s^2 + extra_noise_sd^2) and conv sees noise of standard deviation s.
     """
 
-    def __init__(self, conv, weight, bias, linear_noise_sd):
+    def __init__(self, conv, weight, bias, extra_noise_sd):
         super().__init__()
         weight = torch.as_tensor(weight, dtype=torch.float32).reshape((1, -1))
         self.register_buffer('weight', weight)
         self.register_buffer('bias', torch.as_tensor(bias, dtype=torch.float32).reshape((1,)))
-        self.register_buffer('linear_noise_sd', torch.tensor(float(linear_noise_sd)))
+        self.register_buffer('extra_noise_sd', torch.tensor(float(extra_noise_sd)))
         self.V = nn.Parameter(torch.zeros_like(weight))
         self.conv = conv
         nn.init.zeros_(conv.lin1.weight)
@@ -95,7 +95,7 @@ class LinearConvModel(nn.Module):
             # |w| as the root of a sum with a small constant: the gradient of the norm at w = 0
             # is NaN
             linear = linear + (torch.randn((x.shape[0], 1), device=x.device)
-                               * self.linear_noise_sd * torch.sqrt((w ** 2).sum() + 1e-12))
+                               * self.extra_noise_sd * torch.sqrt((w ** 2).sum() + 1e-12))
         return linear + self.conv(x)
 
 

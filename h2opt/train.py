@@ -194,7 +194,7 @@ def train_batch(models, X, groups, environment, train_rows, noise_sd, earlier=No
         for c, model in enumerate(models):
             for name, parameter in model.named_parameters():
                 parameter.copy_(params[name][c])
-        model.eval()
+            model.eval()
     return models
 
 
@@ -246,7 +246,7 @@ def train_models(models, X, groups, environment, train_test, model_files=None, n
     trait (B, n_traits). model_files: None, or one file per model. Trait t of all models is trained
     together by train_batch, each model on top of its own traits 0..t-1, so the models share each
     noise draw. With verbose, the train and test heritability of each trait of each model is
-    printed. The other options are as in train. Returns models.
+    printed. The other options are as in train. Returns models, in evaluation mode.
     """
     groups = np.asarray(groups)
     subgroups = None if subgroups is None else np.asarray(subgroups)
@@ -283,6 +283,8 @@ def train_models(models, X, groups, environment, train_test, model_files=None, n
             if model_files is not None:
                 torch.save(model, model_files[b])
 
+    for model in models:
+        model.eval()
     return models
 
 
@@ -332,6 +334,9 @@ def train_linear_conv_models(make_conv, X, groups, environment, train_test, line
             w = linear[b].models[t].lin1.weight.detach().cpu().numpy()
             bias = linear[b].models[t].lin1.bias.detach().cpu().numpy()
             s = (flat[train_test[b] == 0] @ w.T).std()
+            if s == 0:
+                raise ValueError(f'linear trait {t} of model {b} is constant on its training '
+                                 'individuals')
             model.models[t] = LinearConvModel(model.models[t], w / s, bias / s, extra_sd[b, t])
         models.append(model)
     return train_models(models, X, groups, environment, train_test, n_iter=n_iter,

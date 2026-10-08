@@ -260,7 +260,7 @@ def test_train_linear_conv_models_starts_at_the_linear_traits():
                                    expected[:, 0] / expected[rows == 0, 0].std(), atol=1e-4)
         np.testing.assert_allclose(h2opt.synthetic_traits(model, images, rows == 0)[:, 1:],
                                    expected[:, 1:] / start_scale(reference, flat, rows), atol=1e-4)
-        assert torch.allclose(model.models[1].linear_noise_sd, torch.tensor(0.4))
+        assert torch.allclose(model.models[1].extra_noise_sd, torch.tensor(0.4))
     torch.manual_seed(0)
     models = h2opt.train_linear_conv_models(partial(h2opt.ImageConvModel, 2, 15), images, groups,
                                             None, train_test, 0.5, 0.3, n_iter=20, **options)
@@ -269,3 +269,31 @@ def test_train_linear_conv_models_starts_at_the_linear_traits():
         assert traits.shape == (60, 2) and np.isfinite(traits).all()
         assert not model.models[0].training
         assert model.models[0].V.abs().sum() > 0
+
+
+def test_train_batch_returns_every_copy_in_evaluation_mode():
+    images, groups, train_test = _image_data()
+    for max_copies in (None, 2):
+        models = [h2opt.ImageConvModel(2, 15) for _ in range(4)]
+        rows = np.concatenate([train_test, train_test])[:4] == 0
+        h2opt.train_batch(models, images, groups, None, rows, np.full(4, 0.1), n_iter=3,
+                          max_copies=max_copies)
+        assert not any(m.training for m in models)
+
+
+def test_train_linear_conv_models_returns_every_model_in_evaluation_mode():
+    images, groups, train_test = _image_data()
+    models = h2opt.train_linear_conv_models(partial(h2opt.ImageConvModel, 2, 15), images, groups,
+                                            None, train_test, 0.5, 0.3, n_traits=2,
+                                            n_linear_iter=5, n_iter=3, verbose=False)
+    assert len(models) > 1
+    assert not any(m.training for model in models for m in model.modules())
+
+
+def test_train_linear_conv_models_rejects_a_constant_linear_trait():
+    images, groups, train_test = _image_data()
+    images = np.ones_like(images)
+    with pytest.raises(ValueError, match='constant'):
+        h2opt.train_linear_conv_models(partial(h2opt.ImageConvModel, 2, 15), images, groups, None,
+                                       train_test, 0.5, 0.3, n_linear_iter=0, n_iter=0,
+                                       verbose=False)
