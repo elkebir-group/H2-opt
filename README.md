@@ -105,7 +105,8 @@ Other models are trained with `torch.func.vmap`, which gives no speedup for `Con
 
 ### Choosing the noise level
 
-`select_noise_level` chooses one noise level for all traits from the data. For each level, it trains all traits in order on part of the groups and scores their heritability on the held-out groups.
+`select_noise_level` chooses one noise level for all traits from the data. For each level, it trains the first trait on part of the groups and scores its heritability on the held-out groups.
+The first trait sets the level: a mean over all traits rewards high noise, which spreads the heritable signal over more traits (the first traits lose heritability and the later traits gain it). The first trait also needs no earlier traits, so selection trains only it.
 Each level is the standard deviation of normal noise as a fraction of `noise_scale(X)`, the root mean variance of the measurements, so the same levels apply to data on any scale.
 
 ```python
@@ -113,19 +114,21 @@ from h2opt.selection import select_noise_level
 
 is_train = train_test == 0
 noise_sd, scores, traits = select_noise_level(lambda: LinearModel(X.shape[1]), X, groups,
-                                              environment, n_traits, subsets=[is_train],
-                                              n_iter=10000)
+                                              environment, subsets=[is_train], n_iter=10000)
 train(model, X, groups, environment, train_test, n_traits=n_traits, noise_sd=noise_sd[0])
 ```
 
 Within each subset of the individuals (`subsets`, e.g. the training individuals of several outer folds, all chosen in one batch), the groups are split (`h2opt.folds.group_folds`) into 5 folds, and each fold is the held-out groups of one validation split (`n_folds`; `n_splits` uses only the first folds).
-The levels are `NOISE_LEVELS` (0.001 to 10, quarter-decade steps). The chosen level has the best held-out heritability averaged over the traits and splits.
-All subsets, splits and levels of a trait are trained together by `train_batch`.
+The levels are `NOISE_LEVELS` (0.001 to 10, quarter-decade steps). The chosen level has the best held-out heritability averaged over the splits.
+All subsets, splits and levels are trained together by `train_batch`.
 It returns the noise standard deviation of each subset for `train`: the chosen level times `noise_scale` of the subset's measurements.
 Given a list of measurement sets of the same individuals (e.g. one per date), it trains and scores each set and chooses one level for all of them by their mean score; each set gets its own standard deviation, the level times its own `noise_scale`.
 With `split_units` (e.g. the individuals themselves), the validation folds split those units instead of the groups.
-`select_noise_level` also returns the scores of each trait (the chosen level is `best_level(levels, scores[i])`) and the trained validation traits (before decorrelation) for each subset, trait, split and level. The traits of a level do not depend on the other levels, so another rule over the levels can be examined without training again.
+`select_noise_level` also returns the scores (the chosen level is `best_level(levels, scores[i])`) and the trained validation traits for each subset, split and level. The traits of a level do not depend on the other levels, so another rule over the levels can be examined without training again.
 Levels can also be scored in separate runs (e.g. to extend the grid later): `best_level(levels, scores)` applies the same rule to their scores stacked on the last axis.
+
+For `LinearConvModel`, the linear branch keeps the level of linear H2-opt, and `score_linear_conv_levels` scores the first trait at each noise level of the convolutional branch on the same validation splits.
+The chosen level is the highest level whose score is within one standard error of the best (`highest_level_within_one_se`). A high level makes the convolutional branch add almost nothing, so the model stays at the linear trait unless the convolutional branch clearly raises the held-out heritability.
 
 ## Baselines
 

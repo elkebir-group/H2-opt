@@ -32,7 +32,7 @@ installs this checkout as an editable sibling (`../H2-opt`).
 | `decorrelation.py` | `Decorrelation`: traits made uncorrelated on training individuals, in order |
 | `baselines.py` | PCA, genetic PCA, LDA, PCH (ridge; `RIDGES` = squared noise levels, `PCH.tune`), most heritable features |
 | `folds.py` | `group_folds`, `per_group`, `cross_validate` |
-| `selection.py` | the H2-opt noise level, one for all traits, by held-out heritability (`select_noise_level`, best mean score: `best_level`) |
+| `selection.py` | noise levels by the held-out heritability of the first trait: H2-opt's, one for all traits (`select_noise_level`, best mean score: `best_level`); the convolutional branch of `LinearConvModel` (`score_linear_conv_levels`, highest level within one SE: `highest_level_within_one_se`) |
 | `simulate.py` | `AutoEncoder` (tanh, one hidden layer); `latent_scale`, `encode_latent`: latent traits to simulated spectra (decoder linearized at the latent means) |
 | `io.py` | `load_npz` |
 
