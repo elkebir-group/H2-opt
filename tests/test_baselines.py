@@ -87,7 +87,7 @@ def test_pch_tune_scores_held_out_heritability(sorghum):
     traits = pch.transform(X[val])[:, :1]
     expected = h2opt.anova_heritability(traits, groups[val], environment[val])[0]
     assert fold_scores[0, 1] == pytest.approx(expected)
-    assert baselines.RIDGES[0] == pytest.approx(1e-6) and baselines.RIDGES[-1] == pytest.approx(100)
+    assert baselines.RIDGES[0] == pytest.approx(1e-6) and baselines.RIDGES[-1] == pytest.approx(1e4)
 
 
 def test_pch_tune_on_several_measurement_sets_averages_their_scores(sorghum_small):

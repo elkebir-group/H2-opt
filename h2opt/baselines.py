@@ -15,7 +15,7 @@ from .decorrelation import Decorrelation
 from .heritability import _as_environment, anova_heritability, heritability_design
 from .selection import NOISE_LEVELS, best_level, cross_validate_levels
 
-# Ridges of PCH: the squares of H2-opt's noise levels (1e-6 to 100). PCH penalizes
+# Ridges of PCH: the squares of H2-opt's noise levels (1e-6 to 1e4). PCH penalizes
 # ridge * v * |w|^2 with v the mean variance of the measurements, the penalty that normal input
 # noise of standard deviation sqrt(ridge * v) adds to a linear trait, so ridge s^2 matches H2-opt
 # at noise level s.

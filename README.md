@@ -120,7 +120,7 @@ train(model, X, groups, environment, train_test, n_traits=n_traits, noise_sd=noi
 ```
 
 Within each subset of the individuals (`subsets`, e.g. the training individuals of several outer folds, all chosen in one batch), the groups are split (`h2opt.folds.group_folds`) into 5 folds, and each fold is the held-out groups of one validation split (`n_folds`; `n_splits` uses only the first folds).
-The levels are `NOISE_LEVELS` (0.001 to 10, quarter-decade steps). The chosen level has the best held-out heritability averaged over the splits.
+The levels are `NOISE_LEVELS` (0.001 to 100, quarter-decade steps), the one grid of every method. The chosen level has the best held-out heritability averaged over the splits.
 All subsets, splits and levels are trained together by `train_batch`.
 It returns the noise standard deviation of each subset for `train`: the chosen level times `noise_scale` of the subset's measurements.
 Given a list of measurement sets of the same individuals (e.g. one per date), it trains and scores each set and chooses one level for all of them by their mean score; each set gets its own standard deviation, the level times its own `noise_scale`.
@@ -140,7 +140,7 @@ Their traits are centered and made uncorrelated on the training individuals (`De
 - `GeneticPCA(n_traits)`: principal components of the ANOVA estimate of the genetic covariance.
 - `PCH(n_traits, ridge, estimator='anova')`: principal components of heritability, maximizing the ANOVA heritability above (or, with `estimator='henderson3'` and `fit(X, groups, environment, subgroups)`, Henderson's Method III) with ridge regularization.
   Both estimators are ratios of quadratic forms in the trait, so the solution is exact. PCH works in the span of the training data, so the measurements may far outnumber the individuals (e.g. image pixels).
-  `PCH.tune` chooses the ridge from `RIDGES` (1e-6 to 100), the squares of H2-opt's `NOISE_LEVELS`: for a linear trait, ridge s^2 is the penalty of noise level s. It uses the procedure and the rule of `select_noise_level` (`cross_validate_levels`, `best_level`: the best mean held-out heritability of the first trait, with the same estimator; `split_units` as there); given a list of measurement sets of the same individuals (e.g. one per date), it chooses one ridge for all of them by their mean score.
+  `PCH.tune` chooses the ridge from `RIDGES` (1e-6 to 1e4), the squares of H2-opt's `NOISE_LEVELS`: for a linear trait, ridge s^2 is the penalty of noise level s. It uses the procedure and the rule of `select_noise_level` (`cross_validate_levels`, `best_level`: the best mean held-out heritability of the first trait, with the same estimator; `split_units` as there); given a list of measurement sets of the same individuals (e.g. one per date), it chooses one ridge for all of them by their mean score.
 - `MaxHeritabilityFeatures(n_traits)`: the most heritable individual features, selected greedily.
 
 ```python

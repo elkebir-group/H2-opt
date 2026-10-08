@@ -26,8 +26,8 @@ from .heritability import _as_environment, heritability
 from .train import synthetic_traits, train_batch, train_linear_conv_models
 
 # Noise levels of H2-opt: the standard deviation of the normal input noise as a fraction of
-# noise_scale(X), the typical spread of a measurement; 0.001 to 10 in quarter-decade steps.
-NOISE_LEVELS = tuple(float(s) for s in np.logspace(-3, 1, 17))
+# noise_scale(X), the typical spread of a measurement; 0.001 to 100 in quarter-decade steps.
+NOISE_LEVELS = tuple(float(s) for s in np.logspace(-3, 2, 21))
 
 
 def noise_scale(X):
