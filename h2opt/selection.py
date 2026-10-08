@@ -1,7 +1,9 @@
 """Choosing a regularization strength by heritability on held-out groups.
 
 H2-opt's noise level (select_noise_level), one for all traits: the level whose traits have the
-highest mean held-out heritability over validation folds of the groups (h2opt.folds).
+highest mean held-out heritability over validation folds of the groups (h2opt.folds). The same
+for the convolutional branch of LinearConvModel (score_linear_conv_levels), with the noise of the
+linear branch given.
 """
 
 import copy
@@ -12,7 +14,7 @@ import torch
 from .decorrelation import Decorrelation
 from .folds import group_folds
 from .heritability import _as_environment, heritability
-from .train import train_batch
+from .train import synthetic_traits, train_batch, train_linear_conv_models
 
 # Noise levels of H2-opt: the standard deviation of the normal input noise as a fraction of
 # noise_scale(X), the typical spread of a measurement; 0.001 to 10 in quarter-decade steps.
@@ -113,3 +115,63 @@ def select_noise_level(make_model, X, groups, environment, n_traits, subsets=Non
     if not isinstance(X, list | tuple):
         noise_sd, scores, traits = noise_sd[:, 0], scores[:, 0], traits[:, 0]
     return noise_sd, scores, traits
+
+
+def score_linear_conv_levels(make_conv, X, groups, environment, n_traits, linear_noise_sd, levels,
+                             subsets=None, n_splits=5, n_folds=5, seed=0, subgroups=None,
+                             estimator='anova', split_units=None, **train_options):
+    """Held-out heritability of LinearConvModel traits at each noise level of the convolutional
+    branch, on validation splits as in select_noise_level.
+
+    Within each subset of the individuals (subsets: (k, n) boolean, e.g. the training individuals
+    of k outer folds; default: one subset of all), the groups (or split_units) are assigned to
+    n_folds folds (group_folds), and each of the first n_splits folds is the held-out fold of one
+    validation split. For each split and level, train_linear_conv_models trains traits
+    0..n_traits-1 on the other folds of the subset: linear H2-opt with noise of standard deviation
+    linear_noise_sd of the subset (length k, absolute standard deviations, e.g. noise_sd of
+    select_noise_level), then the LinearConvModel with convolutional noise of standard deviation
+    level * noise_scale(X) (X of the subset, flattened). The score of a trait is its heritability
+    on the held-out fold, after it is made uncorrelated with the earlier traits on the training
+    folds (synthetic_traits). One level per call is enough: the scores of a level do not depend on
+    the other levels, so levels scored in separate runs can be compared (best_level). All copies
+    (subset, split, level) are trained together; train_options go to train_linear_conv_models
+    (e.g. n_linear_iter, n_iter, device, max_copies). Returns ((k, n_traits, n_splits, n_levels)
+    scores, and the (k, n_traits, n_splits, n_levels, n) float32 traits of all n individuals,
+    uncorrelated on the training folds).
+    """
+    X = np.asarray(X)
+    groups = np.asarray(groups)
+    environment = _as_environment(environment, len(groups))
+    subgroups = None if subgroups is None else np.asarray(subgroups)
+    units = groups if split_units is None else np.asarray(split_units)
+    subsets = np.ones((1, len(groups)), dtype=bool) if subsets is None else np.asarray(subsets)
+    linear_noise_sd = np.broadcast_to(np.asarray(linear_noise_sd, dtype=float), (len(subsets),))
+    flat = X.reshape((len(X), -1))
+    copies, train_test, linear_sd, conv_sd = [], [], [], []
+    for i, subset in enumerate(subsets):
+        fold = np.full(len(groups), -1)
+        fold[subset] = group_folds(units[subset], n_folds, seed)
+        scale = noise_scale(flat[subset])
+        for split in range(n_splits):
+            for a, level in enumerate(levels):
+                copies.append((i, split, a))
+                # 0: training folds, 1: held-out fold, 2: outside the subset
+                train_test.append(np.where(subset & (fold != split), 0,
+                                           np.where(fold == split, 1, 2)))
+                linear_sd.append(linear_noise_sd[i])
+                conv_sd.append(level * scale)
+    torch.manual_seed(seed)
+    models = train_linear_conv_models(
+        make_conv, X, groups, environment, np.array(train_test),
+        np.array(linear_sd)[:, None], np.array(conv_sd)[:, None], n_traits=n_traits,
+        subgroups=subgroups, estimator=estimator, verbose=False, **train_options)
+    scores = np.zeros((len(subsets), n_traits, n_splits, len(levels)))
+    traits = np.zeros(scores.shape + (len(groups),), dtype=np.float32)
+    for model, rows, (i, split, a) in zip(models, train_test, copies, strict=True):
+        Y = synthetic_traits(model, X, rows == 0)
+        held_out = rows == 1
+        scores[i, :, split, a] = heritability(
+            Y[held_out], groups[held_out], environment[held_out],
+            None if subgroups is None else subgroups[held_out], estimator)
+        traits[i, :, split, a] = Y.T
+    return scores, traits

@@ -68,3 +68,33 @@ def test_select_noise_level_on_several_measurement_sets_averages_their_scores(so
     # one level for both sets, each scaled by its own noise_scale
     np.testing.assert_allclose(noise_sd, [[chosen * selection.noise_scale(first_set),
                                            chosen * selection.noise_scale(second_set)]])
+
+
+def _linear_conv_scores(X, groups, environment, subsets, **options):
+    return selection.score_linear_conv_levels(
+        lambda: h2opt.ConvModel(X.shape[1]), X, groups, environment, 2, 0.01, (0.1, 1.0),
+        subsets=subsets, n_splits=2, n_folds=3, n_linear_iter=50, n_iter=20, **options)
+
+
+def test_score_linear_conv_levels_scores_held_out_heritability(sorghum):
+    X, groups, environment = sorghum
+    X = X[:, ::4]
+    scores, traits = _linear_conv_scores(X, groups, environment, None)
+    assert scores.shape == (1, 2, 2, 2) and traits.shape == (1, 2, 2, 2, len(groups))
+    assert np.isfinite(scores).all()
+    # the saved traits of split 1 at level 2 give its scores again
+    val = folds.group_folds(groups, 3) == 1
+    Y = traits[0, :, 1, 1].T.astype(float)
+    expected = h2opt.anova_heritability(Y[val], groups[val], environment[val])
+    np.testing.assert_allclose(scores[0, :, 1, 1], expected, atol=1e-5)
+
+
+def test_score_linear_conv_levels_ignores_the_individuals_outside_the_subset(sorghum):
+    X, groups, environment = sorghum
+    X = X[:, ::4]
+    subset = folds.group_folds(groups, 3) != 0
+    changed = X.copy()
+    changed[~subset] = np.random.RandomState(0).normal(size=changed[~subset].shape)
+    scores, _ = _linear_conv_scores(X, groups, environment, subset[None])
+    again, _ = _linear_conv_scores(changed, groups, environment, subset[None])
+    np.testing.assert_allclose(scores, again, atol=1e-4)
