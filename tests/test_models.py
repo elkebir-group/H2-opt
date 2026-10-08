@@ -24,7 +24,9 @@ def test_linear_conv_model_starts_at_the_linear_map():
     model.eval()
     with torch.no_grad():
         torch.testing.assert_close(model(x), linear(x.reshape((5, -1))), rtol=0, atol=0)
-    # in training mode each branch is noisy, and the gradient is finite at w = 0
+    # only conv has parameters: the linear map is fixed
+    assert {name.split('.')[0] for name, _ in model.named_parameters()} == {'conv'}
+    # in training mode each branch is noisy
     model.train()
     assert not torch.equal(model(x), model(x))
     only_conv = h2opt.LinearConvModel(h2opt.ImageConvModel(6, 20), torch.zeros(2400),
@@ -33,7 +35,3 @@ def test_linear_conv_model_starts_at_the_linear_map():
         only_conv.conv.lin1.weight.fill_(0.1)
     only_conv.train()
     assert not torch.equal(only_conv(x), only_conv(x))
-    zero = h2opt.LinearConvModel(h2opt.ConvModel(200), torch.zeros(200), torch.zeros(1), 0.5,
-                                 0.3)
-    zero(torch.rand(5, 200)).sum().backward()
-    assert torch.isfinite(zero.V.grad).all()

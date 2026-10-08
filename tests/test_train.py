@@ -265,11 +265,13 @@ def test_train_linear_conv_models_starts_at_the_linear_traits():
     torch.manual_seed(0)
     models = h2opt.train_linear_conv_models(partial(h2opt.ImageConvModel, 2, 15), images, groups,
                                             None, train_test, 0.5, 0.3, n_iter=20, **options)
-    for model, rows in zip(models, train_test, strict=True):
+    for model, first, rows in zip(models, start, train_test, strict=True):
         traits = h2opt.synthetic_traits(model, images, rows == 0)
         assert traits.shape == (60, 2) and np.isfinite(traits).all()
         assert not model.models[0].training
-        assert model.models[0].V.abs().sum() > 0
+        # the linear map stays fixed and the CNN trains
+        assert torch.equal(model.models[0].weight, first.models[0].weight)
+        assert model.models[0].conv.lin1.weight.abs().sum() > 0
 
 
 def test_train_batch_returns_every_copy_in_evaluation_mode():

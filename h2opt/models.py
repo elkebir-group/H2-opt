@@ -62,19 +62,18 @@ class ImageConvModel(nn.Module):
 
 
 class LinearConvModel(nn.Module):
-    """The sum of a linear map of the flattened input and a convolutional model.
+    """A fixed linear map of the flattened input plus a trainable convolutional model.
 
     conv is a module with a final linear layer lin1 and one output, e.g. ConvModel or
-    ImageConvModel. The weight of the linear map is w = weight + V, with the fixed buffers weight
-    (1, m) and bias (1,), and the parameter V (1, m); m is the number of input values per
-    individual. V starts at zero, and the constructor sets the weight and bias of conv.lin1 to
-    zero, so the model starts at exactly the linear map x w^T + bias.
+    ImageConvModel. The linear map x w^T + b is fixed: w (1, m) and b (1,) are buffers (e.g. a
+    trait of linear H2-opt), m is the number of input values per individual, and only conv
+    trains. The constructor sets the weight and bias of conv.lin1 to zero, so the model starts at
+    exactly the linear map, as a zero-initialized branch added to a frozen model.
 
-    In training mode, each branch draws its own noise, so the two branches can have any noise
-    levels: the linear branch gets normal noise of standard deviation linear_noise_sd |w| per
-    individual on its output, the same as input noise of standard deviation linear_noise_sd for a
-    linear map; conv gets normal input noise of standard deviation conv_noise_sd. Train it with
-    no input noise from train_batch (noise_sd 0).
+    In training mode, each branch draws its own noise: the linear branch gets normal noise of
+    standard deviation linear_noise_sd |w| per individual on its output, the same as input noise
+    of standard deviation linear_noise_sd for a linear map; conv gets normal input noise of
+    standard deviation conv_noise_sd. Train it with no input noise from train_batch (noise_sd 0).
     """
 
     def __init__(self, conv, weight, bias, linear_noise_sd, conv_noise_sd):
@@ -84,19 +83,15 @@ class LinearConvModel(nn.Module):
         self.register_buffer('bias', torch.as_tensor(bias, dtype=torch.float32).reshape((1,)))
         self.register_buffer('linear_noise_sd', torch.tensor(float(linear_noise_sd)))
         self.register_buffer('conv_noise_sd', torch.tensor(float(conv_noise_sd)))
-        self.V = nn.Parameter(torch.zeros_like(weight))
         self.conv = conv
         nn.init.zeros_(conv.lin1.weight)
         nn.init.zeros_(conv.lin1.bias)
 
     def forward(self, x):
-        w = self.weight + self.V
-        linear = F.linear(x.reshape((x.shape[0], -1)), w, self.bias)
+        linear = F.linear(x.reshape((x.shape[0], -1)), self.weight, self.bias)
         if self.training:
-            # |w| as the root of a sum with a small constant: the gradient of the norm at w = 0
-            # is NaN
             linear = linear + (torch.randn((x.shape[0], 1), device=x.device)
-                               * self.linear_noise_sd * torch.sqrt((w ** 2).sum() + 1e-12))
+                               * self.linear_noise_sd * torch.linalg.norm(self.weight))
             x = x + torch.randn_like(x) * self.conv_noise_sd
         return linear + self.conv(x)
 

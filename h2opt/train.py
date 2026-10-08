@@ -300,10 +300,10 @@ def train_linear_conv_models(make_conv, X, groups, environment, train_test, line
     2. A TraitModels of LinearConvModel(make_conv(), w / s, b / s, ...) per model, with the
        weight w and bias b of each linear trait. s is the standard deviation of the output of
        that linear trait on the training individuals of the model, so each trait starts at the
-       linear trait with unit standard deviation. It is trained by train_models for n_iter steps
-       with no shared input noise: the linear branch draws noise of standard deviation
-       linear_noise_sd (as input noise), conv draws input noise of standard deviation
-       conv_noise_sd.
+       linear trait with unit standard deviation. The linear trait stays fixed, and only the
+       convolutional model trains, by train_models for n_iter steps with no shared input noise:
+       the linear branch draws noise of standard deviation linear_noise_sd (as input noise),
+       conv draws input noise of standard deviation conv_noise_sd.
 
     make_conv: a function with no arguments that returns a new convolutional model, e.g.
     functools.partial(ImageConvModel, n_channels, image_size). X: the input of the convolutional
