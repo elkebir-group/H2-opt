@@ -12,9 +12,8 @@ import scipy.linalg
 from scipy.sparse.linalg import eigsh
 
 from .decorrelation import Decorrelation
-from .folds import cross_validate
-from .heritability import _as_environment, anova_heritability, heritability, heritability_design
-from .selection import NOISE_LEVELS
+from .heritability import _as_environment, anova_heritability, heritability_design
+from .selection import NOISE_LEVELS, best_level, cross_validate_levels
 
 # Ridges of PCH: the squares of H2-opt's noise levels (1e-6 to 100). PCH penalizes
 # ridge * v * |w|^2 with v the mean variance of the measurements, the penalty that normal input
@@ -202,40 +201,47 @@ class PCH(LinearBaseline):
         return X, Xc, V, Xc @ V
 
     @classmethod
-    def tune(cls, X, groups, environment, n_traits, ridges=RIDGES, n_folds=5, seed=0,
-             subgroups=None, estimator='anova', split_units=None):
-        """Choose the ridge by cross-validated heritability.
+    def tune(cls, X, groups, environment, ridges=RIDGES, n_folds=5, seed=0, subgroups=None,
+             estimator='anova', split_units=None):
+        """Choose the ridge by the held-out heritability of the first trait: the procedure and the
+        rule of H2-opt's noise level (h2opt.selection.cross_validate_levels on n_folds splits,
+        best_level).
 
-        For each fold of the groups (or of the split_units, labels of the individuals, as in
-        h2opt.selection.select_noise_level; h2opt.folds.cross_validate) and each ridge, PCH
-        is fitted on the other folds and scored by the mean heritability (by the same estimator)
-        of its traits on the held-out fold. X is one (n, p) array, or a list of arrays of the same
-        individuals (e.g. one per date); then one ridge serves all of them, PCH is fitted to each,
-        and the score is the mean over them.
-        Returns (ridge with the best mean score, scores (len(ridges),), fold_scores).
+        For each fold of the groups (or of the split_units, labels of the individuals) and each
+        ridge, the first PCH trait is fitted on the other folds and scored by its heritability
+        (by the same estimator) on the held-out fold. X is one (n, p) array, or a list of arrays
+        of the same individuals (e.g. one per date); then one ridge serves all of them, PCH is
+        fitted to each, and the score is the mean over them.
+        Returns (the ridge with the best mean score, the scores (len(ridges),) averaged over the
+        folds, and the (n_folds, len(ridges)) fold scores).
         """
-        sets = X if isinstance(X, list | tuple) else [X]
+        sets = [np.asarray(x) for x in (X if isinstance(X, list | tuple) else [X])]
         groups = np.asarray(groups)
         environment = _as_environment(environment, len(groups))
 
         def part(labels, rows):
             return None if labels is None else np.asarray(labels)[rows]
 
-        def score_fold(fit, val):
-            scores = []
-            for measurements in sets:
-                measurements = np.asarray(measurements)
-                fitted = cls.fit_ridges(measurements[fit], groups[fit], environment[fit],
-                                        part(subgroups, fit), n_traits, ridges, estimator)
-                traits = np.concatenate([pch.transform(measurements[val]) for pch in fitted],
-                                        axis=1)
-                scores.append(heritability(traits, groups[val], environment[val],
-                                           part(subgroups, val), estimator))
-            return np.mean(scores, axis=0).reshape((len(ridges), n_traits)).mean(axis=1)
+        def fit(fit_rows, subset, ridge):
+            # copies with the same training rows share one decomposition (fit_ridges)
+            out = np.zeros((len(sets), len(ridge), len(groups)))
+            same = {}
+            for c, rows in enumerate(fit_rows):
+                same.setdefault(rows.tobytes(), []).append(c)
+            for copies in same.values():
+                rows = fit_rows[copies[0]]
+                for k, measurements in enumerate(sets):
+                    fitted = cls.fit_ridges(measurements[rows], groups[rows], environment[rows],
+                                            part(subgroups, rows), 1, list(ridge[copies]),
+                                            estimator)
+                    for c, pch in zip(copies, fitted, strict=True):
+                        out[k, c] = pch.transform(measurements)[:, 0]
+            return out
 
-        units = groups if split_units is None else split_units
-        scores, fold_scores = cross_validate(units, score_fold, n_folds, seed)
-        return ridges[int(np.argmax(scores))], scores, fold_scores
+        scores, _ = cross_validate_levels(fit, groups, environment, ridges, None, n_folds, n_folds,
+                                          seed, subgroups, estimator, split_units)
+        fold_scores = scores[0].mean(axis=0)
+        return best_level(ridges, fold_scores), fold_scores.mean(axis=0), fold_scores
 
 
 class MaxHeritabilityFeatures:

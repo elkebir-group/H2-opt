@@ -77,14 +77,15 @@ def test_pch_tune_scores_held_out_heritability(sorghum):
     X, groups, environment = sorghum
     X = X[:, ::20]
     ridges = (1e-3, 1.0)
-    ridge, scores, fold_scores = baselines.PCH.tune(X, groups, environment, 2, ridges=ridges,
+    ridge, scores, fold_scores = baselines.PCH.tune(X, groups, environment, ridges=ridges,
                                                     n_folds=3)
     assert ridge == ridges[int(np.argmax(scores))]
+    # the score is the held-out heritability of the first trait
     fold = folds.group_folds(groups, 3)
     fit, val = fold != 0, fold == 0
     pch = baselines.PCH(2, ridges[1]).fit(X[fit], groups[fit], environment[fit])
-    traits = pch.transform(X[val])
-    expected = h2opt.anova_heritability(traits, groups[val], environment[val]).mean()
+    traits = pch.transform(X[val])[:, :1]
+    expected = h2opt.anova_heritability(traits, groups[val], environment[val])[0]
     assert fold_scores[0, 1] == pytest.approx(expected)
     assert baselines.RIDGES[0] == pytest.approx(1e-6) and baselines.RIDGES[-1] == pytest.approx(100)
 
@@ -94,9 +95,9 @@ def test_pch_tune_on_several_measurement_sets_averages_their_scores(sorghum_smal
     first_set, second_set = X[:, ::20], X[:, 5::20]
     options = dict(ridges=(1e-3, 1.0), n_folds=3, subgroups=np.arange(len(groups)) % 2,
                    estimator='henderson3')
-    _, both, _ = baselines.PCH.tune([first_set, second_set], groups, environment, 1, **options)
-    _, first, _ = baselines.PCH.tune(first_set, groups, environment, 1, **options)
-    _, second, _ = baselines.PCH.tune(second_set, groups, environment, 1, **options)
+    _, both, _ = baselines.PCH.tune([first_set, second_set], groups, environment, **options)
+    _, first, _ = baselines.PCH.tune(first_set, groups, environment, **options)
+    _, second, _ = baselines.PCH.tune(second_set, groups, environment, **options)
     np.testing.assert_allclose(both, (first + second) / 2, rtol=1e-10)
 
 
@@ -104,8 +105,8 @@ def test_split_units_assign_individuals_to_validation_folds(sorghum):
     X, groups, environment = sorghum
     X = X[:, ::20]
     plants = np.arange(len(groups))
-    _, scores, fold_scores = baselines.PCH.tune(X, groups, environment, 1, ridges=(1e-3,),
-                                                n_folds=3, split_units=plants)
+    _, scores, fold_scores = baselines.PCH.tune(X, groups, environment, ridges=(1e-3,), n_folds=3,
+                                                split_units=plants)
     fold = folds.group_folds(plants, 3)
     fit, val = fold != 0, fold == 0
     assert set(groups[fit]) & set(groups[val])

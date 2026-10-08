@@ -26,6 +26,32 @@ def test_select_noise_level_chooses_one_level_by_held_out_heritability(sorghum):
     assert selection.noise_scale(X) == pytest.approx(np.sqrt(X.var(axis=0).mean()))
 
 
+def test_cross_validate_levels_scores_the_held_out_first_trait():
+    # a method whose first trait is a feature times its level, with the training rows checked
+    rng = np.random.RandomState(0)
+    groups = np.repeat(np.arange(30), 2)
+    X = rng.normal(size=(60, 2)) + rng.normal(size=(30, 1))[groups]
+    subsets = np.array([np.arange(60) < 40, np.arange(60) >= 20])
+    calls = []
+
+    def fit(fit_rows, subset, level):
+        calls.append(len(level))
+        for rows, i in zip(fit_rows, subset, strict=True):
+            assert not (rows & ~subsets[i]).any()
+        return np.array([X[:, 0] * lev for lev in level])
+
+    scores, traits = selection.cross_validate_levels(fit, groups, None, (1.0, 2.0), subsets,
+                                                     n_splits=2, n_folds=3)
+    assert calls == [2 * 2 * 2] and scores.shape == (2, 2, 2) and traits.shape == (2, 2, 2, 60)
+    # heritability does not depend on the scale, so both levels score the same
+    np.testing.assert_allclose(scores[..., 0], scores[..., 1])
+    fold = folds.group_folds(groups[subsets[1]], 3)
+    val = np.zeros(60, dtype=bool)
+    val[subsets[1]] = fold == 1
+    expected = h2opt.anova_heritability(X[val, :1], groups[val])[0]
+    assert scores[1, 1, 0] == pytest.approx(expected)
+
+
 def test_highest_level_within_one_se():
     # splits x levels: level 1.0 is best (mean 0.54, SE 0.02); 10.0 (0.52) is within one SE
     scores = np.array([[0.50, 0.52, 0.49], [0.54, 0.56, 0.55]])

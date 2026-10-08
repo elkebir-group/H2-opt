@@ -1,4 +1,4 @@
-"""Folds of groups: assigning groups of individuals to folds, and cross-validation over them."""
+"""Folds of groups: assigning groups of individuals to folds."""
 
 import numpy as np
 
@@ -16,14 +16,3 @@ def group_folds(groups, n_folds=5, seed=0):
     groups are spread evenly over the folds in a random order."""
     return per_group(groups, lambda c: np.random.RandomState(seed).permutation(c) % n_folds)
 
-
-def cross_validate(units, score_fold, n_folds=5, seed=0):
-    """Scores of a set of settings, per fold of the units (labels of the individuals, e.g. their
-    groups; group_folds keeps the individuals of a unit together).
-
-    score_fold(fit, val), with boolean masks of the training and held-out individuals, returns one
-    score per setting. Returns (scores averaged over the folds, (n_folds, n_settings) scores).
-    """
-    fold = group_folds(np.asarray(units), n_folds, seed)
-    fold_scores = np.array([score_fold(fold != f, fold == f) for f in range(n_folds)])
-    return fold_scores.mean(axis=0), fold_scores
