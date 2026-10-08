@@ -311,9 +311,11 @@ def train_linear_conv_models(make_conv, X, groups, environment, train_test, line
     functools.partial(ImageConvModel, n_channels, image_size). X: the input of the convolutional
     model, with individuals on the first axis. train_test: (B, n) array, the train_test of each of
     the B models. linear_noise_sd, conv_noise_sd: as noise_sd in train_models. Both stages train
-    trait t of all models together on top of traits 0..t-1 of the same stage. Both use the
-    default optimizer of train (Adam). The other options are as in train_models. Returns the B
-    trained models.
+    trait t on top of traits 0..t-1 of the same stage. The first stage trains trait t of all
+    linear models together. The second stage trains trait t of the models with the same
+    train_test together, so a step computes only the training individuals of those models. Both
+    use the default optimizer of train (Adam). The other options are as in train_models. Returns
+    the B trained models.
     """
     X = np.asarray(X)
     flat = X.reshape((len(X), -1))
@@ -346,5 +348,11 @@ def train_linear_conv_models(make_conv, X, groups, environment, train_test, line
             model.models[t] = LinearConvModel(model.models[t], w / s, bias / s, linear_sd[b, t],
                                               conv_sd[b, t])
         models.append(model)
-    return train_models(models, X, groups, environment, train_test, n_iter=n_iter, noise_sd=0.0,
-                        **options)
+    # the models with the same train_test train together, on their training individuals only
+    splits = {}
+    for b in range(n_models):
+        splits.setdefault(train_test[b].tobytes(), []).append(b)
+    for split in splits.values():
+        train_models([models[b] for b in split], X, groups, environment, train_test[split],
+                     n_iter=n_iter, noise_sd=0.0, **options)
+    return models
