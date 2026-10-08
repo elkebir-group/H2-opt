@@ -33,7 +33,7 @@ installs this checkout as an editable sibling (`../H2-opt`).
 | `baselines.py` | PCA, genetic PCA, LDA, PCH (ridge; `RIDGES` = squared noise levels, `PCH.tune`), most heritable features |
 | `folds.py` | `group_folds`, `per_group`, `cross_validate` |
 | `selection.py` | the H2-opt noise level, one for all traits, by held-out heritability (`select_noise_level`, best mean score: `best_level`) |
-| `simulate.py` | `AutoEncoder` (tanh, one hidden layer); `latent_scale`, `encode_latent`: latent traits to simulated spectra |
+| `simulate.py` | `AutoEncoder` (tanh, one hidden layer); `latent_scale`, `encode_latent`: latent traits to simulated spectra (decoder linearized at the latent means) |
 | `io.py` | `load_npz` |
 
 ## Conventions: code, naming, prose

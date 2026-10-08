@@ -14,3 +14,8 @@ def test_encode_latent(sorghum, examples):
     # the encodings of the simulated measurements follow the reference scale
     encoded_means, _ = h2opt.latent_scale(autoencoder, simulated)
     assert np.abs(encoded_means - means).max() < 0.5 * stds.max()
+    # the measurements are an exact linear function of the latent traits
+    design = np.c_[np.ones(len(latent)), latent]
+    coefficients, *_ = np.linalg.lstsq(design, simulated, rcond=None)
+    residual = simulated - design @ coefficients
+    assert (residual ** 2).sum() < 1e-8 * ((simulated - simulated.mean(0)) ** 2).sum()

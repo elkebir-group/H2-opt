@@ -152,6 +152,7 @@ traits = pch.transform(X)
 
 `encode_latent` embeds latent traits into simulated spectra with a pretrained autoencoder.
 Each latent trait, in standard units, is matched to the mean and spread of one latent dimension over the encodings of a reference set of real measurements (`latent_scale`).
+The decoder is linearized at the latent means, so the spectra are an exact linear function of the latent traits: the full tanh decoder adds products and squares of the latent traits, which are heritable extra traits.
 The pretrained autoencoder in `data/examples/autoencoder.pt` has 5 latent dimensions.
 
 Example with the latent traits simulated with simplePHENOTYPES in the paper:

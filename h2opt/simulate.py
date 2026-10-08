@@ -15,16 +15,23 @@ def latent_scale(autoencoder, reference):
 
 
 def encode_latent(latent, autoencoder, scale):
-    """Decode latent traits into simulated measurements.
+    """Decode latent traits into simulated measurements with the decoder linearized at the means.
 
     latent: (n, k) latent values in standard units, k = the autoencoder's latent size.
     scale: (means, standard deviations) of the latent dimensions, from latent_scale. Latent
-    dimension j is set to means[j] + standard deviations[j] * latent[:, j] and decoded. Returns an
+    dimension j is set to means[j] + standard deviations[j] * latent[:, j]. The measurements are
+    decode(means) + J (latent * standard deviations), with J the (m, k) Jacobian of the decoder
+    at the means, so they are an exact linear function of the latent traits. The full decoder
+    adds products and squares of the latent traits; these are heritable when the latent traits
+    are, and a method that maximizes heritability then finds them as extra traits. Returns an
     (n, m) array.
     """
     means, stds = scale
+    center = torch.tensor(means).float()
+    jacobian = torch.autograd.functional.jacobian(autoencoder.decode, center).numpy()
     with torch.no_grad():
-        return autoencoder.decode(torch.tensor(latent * stds + means).float()).numpy()
+        base = autoencoder.decode(center).numpy()
+    return base + (latent * stds) @ jacobian.T
 
 
 class AutoEncoder(nn.Module):
