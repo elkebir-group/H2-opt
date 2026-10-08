@@ -2,6 +2,7 @@
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 class LinearModel(nn.Module):
@@ -58,6 +59,44 @@ class ImageConvModel(nn.Module):
         x = self.nonlin(self.conv1(x))
         x = self.nonlin(self.conv2(x))
         return self.lin1(x.reshape((x.shape[0], -1)))
+
+
+class LinearConvModel(nn.Module):
+    """The sum of a linear map of the flattened input and a convolutional model.
+
+    conv is a module with a final linear layer lin1 and one output, e.g. ConvModel or
+    ImageConvModel. The weight of the linear map is w = weight + V, with the fixed buffers weight
+    (1, m) and bias (1,), and the parameter V (1, m); m is the number of input values per
+    individual. V starts at zero, and the constructor sets the weight and bias of conv.lin1 to
+    zero, so the model starts at exactly the linear map x w^T + bias.
+
+    In training mode, the linear branch also gets normal noise of standard deviation
+    linear_noise_sd |w| per individual. For a linear map, this is the same as input noise of
+    standard deviation linear_noise_sd. With input noise of standard deviation s (from
+    train_batch), the linear branch thus sees noise of standard deviation
+    sqrt(s^2 + linear_noise_sd^2) and conv sees noise of standard deviation s.
+    """
+
+    def __init__(self, conv, weight, bias, linear_noise_sd):
+        super().__init__()
+        weight = torch.as_tensor(weight, dtype=torch.float32).reshape((1, -1))
+        self.register_buffer('weight', weight)
+        self.register_buffer('bias', torch.as_tensor(bias, dtype=torch.float32).reshape((1,)))
+        self.register_buffer('linear_noise_sd', torch.tensor(float(linear_noise_sd)))
+        self.V = nn.Parameter(torch.zeros_like(weight))
+        self.conv = conv
+        nn.init.zeros_(conv.lin1.weight)
+        nn.init.zeros_(conv.lin1.bias)
+
+    def forward(self, x):
+        w = self.weight + self.V
+        linear = F.linear(x.reshape((x.shape[0], -1)), w, self.bias)
+        if self.training:
+            # |w| as the root of a sum with a small constant: the gradient of the norm at w = 0
+            # is NaN
+            linear = linear + (torch.randn((x.shape[0], 1), device=x.device)
+                               * self.linear_noise_sd * torch.sqrt((w ** 2).sum() + 1e-12))
+        return linear + self.conv(x)
 
 
 class TraitModels(nn.Module):

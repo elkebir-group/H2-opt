@@ -1,4 +1,6 @@
 import copy
+import sys
+from functools import partial
 
 import numpy as np
 import pytest
@@ -203,3 +205,67 @@ def test_train_models_trains_each_model_as_alone(sorghum):
         is_train = train_test == 0
         np.testing.assert_allclose(h2opt.synthetic_traits(model, X, is_train),
                                    h2opt.synthetic_traits(alone, X, is_train), atol=1e-4)
+
+
+def _image_data():
+    rng = np.random.RandomState(0)
+    groups = np.repeat(np.arange(15), 4)
+    images = rng.normal(size=(60, 2, 15, 15)) + groups[:, None, None, None] / 10
+    train_test = np.array([(np.arange(60) % 3 == k).astype(int) for k in range(2)])
+    return images.astype(np.float32), groups, train_test
+
+
+def test_vmap_randomness_leaves_models_without_draws_unchanged(monkeypatch):
+    # train_batch lets the forward pass draw noise (vmap randomness 'different'); a model that
+    # draws nothing trains as with the default randomness 'error', which forbids draws
+    images, groups, train_test = _image_data()
+    results = []
+    for randomness in ('different', 'error'):
+        if randomness == 'error':
+            def default_vmap(function, randomness=None):
+                return torch.func.vmap(function)
+            monkeypatch.setattr(sys.modules['h2opt.train'], 'vmap', default_vmap)
+        torch.manual_seed(0)
+        models = [h2opt.TraitModels(2, h2opt.ImageConvModel, 2, 15) for _ in train_test]
+        h2opt.train_models(models, images, groups, None, train_test, n_traits=2, n_iter=20,
+                           noise_sd=0.3, verbose=False)
+        results.append([h2opt.synthetic_traits(m, images, r == 0)
+                        for m, r in zip(models, train_test, strict=True)])
+    for a, b in zip(*results, strict=True):
+        np.testing.assert_array_equal(a, b)
+
+
+def start_scale(model, X, rows):
+    """Standard deviation of the output of trait 1 of model on the training rows."""
+    with torch.no_grad():
+        return model.models[1](torch.tensor(X[rows == 0])).std(unbiased=False).item()
+
+
+def test_train_linear_conv_models_starts_at_the_linear_traits():
+    images, groups, train_test = _image_data()
+    flat = images.reshape((len(images), -1))
+    options = dict(n_traits=2, n_linear_iter=50, verbose=False)
+    # with no second-stage steps, the traits are the first-stage linear traits, each with unit
+    # standard deviation on the training individuals
+    torch.manual_seed(0)
+    start = h2opt.train_linear_conv_models(partial(h2opt.ImageConvModel, 2, 15), images, groups,
+                                           None, train_test, 0.5, 0.3, n_iter=0, **options)
+    torch.manual_seed(0)
+    linear = [h2opt.TraitModels(2, h2opt.LinearModel, flat.shape[1]) for _ in train_test]
+    h2opt.train_models(linear, flat, groups, None, train_test, n_iter=50, noise_sd=0.5,
+                       verbose=False, n_traits=2)
+    for model, reference, rows in zip(start, linear, train_test, strict=True):
+        expected = h2opt.synthetic_traits(reference, flat, rows == 0)
+        np.testing.assert_allclose(h2opt.synthetic_traits(model, images, rows == 0)[:, 0],
+                                   expected[:, 0] / expected[rows == 0, 0].std(), atol=1e-4)
+        np.testing.assert_allclose(h2opt.synthetic_traits(model, images, rows == 0)[:, 1:],
+                                   expected[:, 1:] / start_scale(reference, flat, rows), atol=1e-4)
+        assert torch.allclose(model.models[1].linear_noise_sd, torch.tensor(0.4))
+    torch.manual_seed(0)
+    models = h2opt.train_linear_conv_models(partial(h2opt.ImageConvModel, 2, 15), images, groups,
+                                            None, train_test, 0.5, 0.3, n_iter=20, **options)
+    for model, rows in zip(models, train_test, strict=True):
+        traits = h2opt.synthetic_traits(model, images, rows == 0)
+        assert traits.shape == (60, 2) and np.isfinite(traits).all()
+        assert not model.models[0].training
+        assert model.models[0].V.abs().sum() > 0
