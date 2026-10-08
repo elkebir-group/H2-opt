@@ -168,7 +168,8 @@ def score_linear_conv_levels(make_conv, X, groups, environment, linear_noise_sd,
     standard deviation linear_noise_sd of the subset (length k, absolute standard deviations,
     e.g. noise_sd of select_noise_level), then the LinearConvModel with convolutional noise of
     standard deviation level * noise_scale(X) (X of the subset, flattened). All copies are trained
-    together; train_options go to train_linear_conv_models (e.g. n_linear_iter, n_iter, device,
+    together, and the copies of one split share one linear stage (it does not depend on the
+    level); train_options go to train_linear_conv_models (e.g. n_linear_iter, n_iter, device,
     max_copies). The other arguments are as in cross_validate_levels. One level per call is
     enough: the scores of a level do not depend on the other levels. Returns the
     (k, n_splits, n_levels) scores and the (k, n_splits, n_levels, n) float32 traits.

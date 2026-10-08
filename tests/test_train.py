@@ -274,6 +274,24 @@ def test_train_linear_conv_models_starts_at_the_linear_traits():
         assert model.models[0].conv.lin1.weight.abs().sum() > 0
 
 
+def test_train_linear_conv_models_shares_the_linear_stage_of_equal_splits():
+    images, groups, train_test = _image_data()
+    make_conv = partial(h2opt.ImageConvModel, 2, 15)
+    options = dict(n_linear_iter=50, n_iter=0, verbose=False)
+    # each split twice, at two convolutional noise levels
+    torch.manual_seed(0)
+    models = h2opt.train_linear_conv_models(make_conv, images, groups, None,
+                                            np.repeat(train_test, 2, axis=0), 0.5,
+                                            np.tile([[0.1], [1.0]], (len(train_test), 1)),
+                                            **options)
+    torch.manual_seed(0)
+    once = h2opt.train_linear_conv_models(make_conv, images, groups, None, train_test, 0.5, 0.3,
+                                          **options)
+    for b, model in enumerate(models):
+        assert torch.equal(model.models[0].weight, once[b // 2].models[0].weight)
+    assert not torch.equal(models[0].models[0].weight, models[2].models[0].weight)
+
+
 def test_train_batch_returns_every_copy_in_evaluation_mode():
     images, groups, train_test = _image_data()
     for max_copies in (None, 2):

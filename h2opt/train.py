@@ -296,7 +296,9 @@ def train_linear_conv_models(make_conv, X, groups, environment, train_test, line
 
     The first stage gives the start of the second stage:
     1. A TraitModels of LinearModel on the flattened X, trained by train_models for n_linear_iter
-       steps with input noise of standard deviation linear_noise_sd.
+       steps with input noise of standard deviation linear_noise_sd. This stage does not depend on
+       conv_noise_sd, so the models with the same train_test and linear_noise_sd share one linear
+       TraitModels (e.g. the copies of one validation split at several levels of conv_noise_sd).
     2. A TraitModels of LinearConvModel(make_conv(), w / s, b / s, ...) per model, with the
        weight w and bias b of each linear trait. s is the standard deviation of the output of
        that linear trait on the training individuals of the model, so each trait starts at the
@@ -322,16 +324,21 @@ def train_linear_conv_models(make_conv, X, groups, environment, train_test, line
     options = dict(n_traits=n_traits, device=device, verbose=verbose, subgroups=subgroups,
                    estimator=estimator, max_copies=max_copies)
 
-    linear = [TraitModels(n_traits, LinearModel, flat.shape[1]) for _ in range(n_models)]
-    train_models(linear, flat, groups, environment, train_test, n_iter=n_linear_iter,
-                 noise_sd=linear_sd, **options)
+    # one linear TraitModels per distinct (train_test, linear_sd), in order of first use
+    shared = {}
+    stage = [shared.setdefault((train_test[b].tobytes(), linear_sd[b].tobytes()), len(shared))
+             for b in range(n_models)]
+    first = [stage.index(i) for i in range(len(shared))]
+    linear = [TraitModels(n_traits, LinearModel, flat.shape[1]) for _ in first]
+    train_models(linear, flat, groups, environment, train_test[first], n_iter=n_linear_iter,
+                 noise_sd=linear_sd[first], **options)
 
     models = []
     for b in range(n_models):
         model = TraitModels(n_traits, make_conv)
         for t in range(n_traits):
-            w = linear[b].models[t].lin1.weight.detach().cpu().numpy()
-            bias = linear[b].models[t].lin1.bias.detach().cpu().numpy()
+            w = linear[stage[b]].models[t].lin1.weight.detach().cpu().numpy()
+            bias = linear[stage[b]].models[t].lin1.bias.detach().cpu().numpy()
             s = (flat[train_test[b] == 0] @ w.T).std()
             if s == 0:
                 raise ValueError(f'linear trait {t} of model {b} is constant on its training '
