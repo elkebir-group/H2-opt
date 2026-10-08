@@ -138,18 +138,6 @@ class GeneticPCA(LinearBaseline):
         return V[:, ::-1][:, :self.n_traits]
 
 
-class LDA(LinearBaseline):
-    """Linear discriminant analysis: maximizes between-group over within-group variance.
-
-    Ignores environment and is unregularized; the within-group scatter is inverted on its range.
-    """
-
-    def _directions(self, Z, groups, environment, n_features):
-        within = _group_center(Z, groups)
-        between = Z - within
-        return _top_generalized(between.T @ between, within.T @ within, self.n_traits)
-
-
 class PCH(LinearBaseline):
     """Principal components of heritability with ridge regularization (Wang et al. 2007).
 

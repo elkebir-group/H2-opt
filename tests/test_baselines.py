@@ -12,7 +12,7 @@ def test_baselines(sorghum):
     train = np.random.RandomState(0).randint(5, size=len(groups)) != 0
     herit = {}
     for name, baseline in [('pca', baselines.PCA(3)), ('gpca', baselines.GeneticPCA(3)),
-                           ('lda', baselines.LDA(3)), ('pch', baselines.PCH(3)),
+                           ('pch', baselines.PCH(3)),
                            ('max', baselines.MaxHeritabilityFeatures(3))]:
         Y = baseline.fit(X[train], groups[train], environment[train]).transform(X)
         assert Y.shape == (len(groups), 3)

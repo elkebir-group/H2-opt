@@ -137,7 +137,6 @@ Their traits are centered and made uncorrelated on the training individuals (`De
 
 - `PCA(n_traits)`: principal components of the measurements.
 - `GeneticPCA(n_traits)`: principal components of the ANOVA estimate of the genetic covariance.
-- `LDA(n_traits)`: linear discriminant analysis of the groups (unregularized).
 - `PCH(n_traits, ridge, estimator='anova')`: principal components of heritability, maximizing the ANOVA heritability above (or, with `estimator='henderson3'` and `fit(X, groups, environment, subgroups)`, Henderson's Method III) with ridge regularization.
   Both estimators are ratios of quadratic forms in the trait, so the solution is exact. PCH works in the span of the training data, so the measurements may far outnumber the individuals (e.g. image pixels).
   `PCH.tune` chooses the ridge from `RIDGES` (1e-6 to 100), the squares of H2-opt's `NOISE_LEVELS`: for a linear trait, ridge s^2 is the penalty of noise level s. It uses the rule of `select_noise_level` (the highest mean held-out heritability, with the same estimator; `split_units` as there); given a list of measurement sets of the same individuals (e.g. one per date), it chooses one ridge for all of them by their mean score.
@@ -155,21 +154,23 @@ traits = pch.transform(X)
 
 `encode_latent` embeds latent traits into simulated spectra with a pretrained autoencoder.
 Each latent trait, in standard units, is matched to the mean and spread of one latent dimension over the encodings of a reference set of real measurements (`latent_scale`).
-The decoder is linearized at the latent means, so the spectra are an exact linear function of the latent traits: the full tanh decoder adds products and squares of the latent traits, which are heritable extra traits.
+The decoder is linearized at the latent means, so the decoded spectra are an exact linear function of the latent traits: the full tanh decoder adds products and squares of the latent traits, which are heritable extra traits.
+Each simulated individual also gets the residual of a random real measurement (`reconstruction_residuals`: what the autoencoder does not reconstruct), so the spectra have the size and correlation of the real variation that the latent dimensions miss, and it is not heritable.
 The pretrained autoencoder in `data/examples/autoencoder.pt` has 5 latent dimensions.
 
 Example with the latent traits simulated with simplePHENOTYPES in the paper:
 
 ```python
 import numpy as np
-from h2opt import load_npz, encode_latent, latent_scale, AutoEncoder
+from h2opt import AutoEncoder, encode_latent, latent_scale, load_npz, reconstruction_residuals
 
 autoencoder = AutoEncoder.load('data/examples/autoencoder.pt')
 reference = np.concatenate((load_npz('data/examples/X_file1.npz'), load_npz('data/examples/X_file2.npz')))
 latent = load_npz('data/examples/simulatedLatentTraits.npz')
 latent = (latent - latent.mean(axis=0)) / latent.std(axis=0)
 
-X_simulated = encode_latent(latent, autoencoder, latent_scale(autoencoder, reference))
+X_simulated = encode_latent(latent, autoencoder, latent_scale(autoencoder, reference),
+                           reconstruction_residuals(autoencoder, reference), np.random.RandomState(0))
 ```
 
 ## Tests

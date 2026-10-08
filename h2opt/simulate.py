@@ -14,24 +14,38 @@ def latent_scale(autoencoder, reference):
     return means, np.mean((encoded - means) ** 2, axis=0) ** 0.5
 
 
-def encode_latent(latent, autoencoder, scale):
-    """Decode latent traits into simulated measurements with the decoder linearized at the means.
+def reconstruction_residuals(autoencoder, reference):
+    """What the autoencoder does not reconstruct of each real measurement: reference minus
+    decode(encode(reference)), centered over the individuals. reference: (n_ref, m) array."""
+    with torch.no_grad():
+        x = torch.tensor(reference).float()
+        residuals = (x - autoencoder.decode(autoencoder.encode(x))).numpy()
+    return residuals - residuals.mean(axis=0)
+
+
+def encode_latent(latent, autoencoder, scale, residuals, rng):
+    """Decode latent traits into simulated measurements: the decoder linearized at the means,
+    plus the residual of a random real measurement.
 
     latent: (n, k) latent values in standard units, k = the autoencoder's latent size.
     scale: (means, standard deviations) of the latent dimensions, from latent_scale. Latent
-    dimension j is set to means[j] + standard deviations[j] * latent[:, j]. The measurements are
+    dimension j is set to means[j] + standard deviations[j] * latent[:, j]. The decoded part is
     decode(means) + J (latent * standard deviations), with J the (m, k) Jacobian of the decoder
-    at the means, so they are an exact linear function of the latent traits. The full decoder
-    adds products and squares of the latent traits; these are heritable when the latent traits
-    are, and a method that maximizes heritability then finds them as extra traits. Returns an
-    (n, m) array.
+    at the means, an exact linear function of the latent traits: the full decoder adds products
+    and squares of the latent traits, which are heritable when the latent traits are, and a
+    method that maximizes heritability then finds them as extra traits. residuals: (n_ref, m),
+    from reconstruction_residuals. Each individual gets the residual of one real measurement,
+    drawn with replacement by rng (a numpy RandomState), so the simulated measurements have the
+    size and correlation of the variation that the latent dimensions miss, and it is not
+    heritable. Returns an (n, m) array.
     """
     means, stds = scale
     center = torch.tensor(means).float()
     jacobian = torch.autograd.functional.jacobian(autoencoder.decode, center).numpy()
     with torch.no_grad():
         base = autoencoder.decode(center).numpy()
-    return base + (latent * stds) @ jacobian.T
+    drawn = residuals[rng.randint(len(residuals), size=len(latent))]
+    return base + (latent * stds) @ jacobian.T + drawn
 
 
 class AutoEncoder(nn.Module):

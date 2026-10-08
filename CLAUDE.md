@@ -30,10 +30,10 @@ installs this checkout as an editable sibling (`../H2-opt`).
 | `heritability.py` | `anova_heritability`, `AnovaDesign`, `Henderson3`, `heritability` and `heritability_design` (either estimator, by name) |
 | `models.py`, `train.py` | trait models (`LinearModel`, `ConvModel` for spectra, `ImageConvModel` for images); the training loop `train_batch` (many copies at once; fast for linear models), `train_models` (several models, e.g. one per fold) and `train` on it (Adam, or the paper's RMSprop), `synthetic_traits` |
 | `decorrelation.py` | `Decorrelation`: traits made uncorrelated on training individuals, in order |
-| `baselines.py` | PCA, genetic PCA, LDA, PCH (ridge; `RIDGES` = squared noise levels, `PCH.tune`), most heritable features |
+| `baselines.py` | PCA, genetic PCA, PCH (ridge; `RIDGES` = squared noise levels, `PCH.tune`), most heritable features |
 | `folds.py` | `group_folds`, `per_group`, `cross_validate` |
 | `selection.py` | noise levels by the held-out heritability of the first trait: H2-opt's, one for all traits (`select_noise_level`, best mean score: `best_level`); the convolutional branch of `LinearConvModel` (`score_linear_conv_levels`, highest level within one SE: `highest_level_within_one_se`) |
-| `simulate.py` | `AutoEncoder` (tanh, one hidden layer); `latent_scale`, `encode_latent`: latent traits to simulated spectra (decoder linearized at the latent means) |
+| `simulate.py` | `AutoEncoder` (tanh, one hidden layer); `latent_scale`, `reconstruction_residuals`, `encode_latent`: latent traits to simulated spectra (decoder linearized at the latent means, plus the residual of a random real measurement) |
 | `io.py` | `load_npz` |
 
 ## Conventions: code, naming, prose
