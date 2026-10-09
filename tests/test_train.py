@@ -116,6 +116,26 @@ def test_train_batch_in_chunks_trains_each_copy_as_together(sorghum_small):
         torch.testing.assert_close(a.lin1.weight, b.lin1.weight, atol=1e-5, rtol=1e-4)
 
 
+def test_train_batch_in_chunks_shares_the_noise_draws(sorghum_small):
+    # every chunk starts from the same random state, so copies with the same individuals get the
+    # same draws whether they train together or in separate chunks
+    X, groups, environment = sorghum_small
+    X = X[:, ::20]
+    rows = np.ones((3, len(groups)), dtype=bool)
+    torch.manual_seed(0)
+    start = h2opt.LinearModel(X.shape[1])
+    together = [copy.deepcopy(start) for _ in range(3)]
+    chunked = [copy.deepcopy(start) for _ in range(3)]
+    torch.manual_seed(1)
+    h2opt.train_batch(together, X, groups, environment, rows, [0.1, 0.3, 0.1], n_iter=50)
+    torch.manual_seed(1)
+    h2opt.train_batch(chunked, X, groups, environment, rows, [0.1, 0.3, 0.1], n_iter=50,
+                      max_copies=1)
+    for a, b in zip(together, chunked, strict=True):
+        torch.testing.assert_close(a.lin1.weight, b.lin1.weight, atol=1e-5, rtol=1e-4)
+    torch.testing.assert_close(together[0].lin1.weight, together[2].lin1.weight)
+
+
 def test_rmsprop_and_unknown_optimizer(sorghum):
     X, groups, environment = sorghum
     X = X[:, ::20]
@@ -216,11 +236,11 @@ def _image_data():
 
 
 def test_vmap_randomness_leaves_models_without_draws_unchanged(monkeypatch):
-    # train_batch lets the forward pass draw noise (vmap randomness 'different'); a model that
+    # train_batch lets the forward pass draw noise (vmap randomness 'same'); a model that
     # draws nothing trains as with the default randomness 'error', which forbids draws
     images, groups, train_test = _image_data()
     results = []
-    for randomness in ('different', 'error'):
+    for randomness in ('same', 'error'):
         if randomness == 'error':
             def default_vmap(function, randomness=None):
                 return torch.func.vmap(function)
@@ -318,3 +338,15 @@ def test_train_linear_conv_models_rejects_a_constant_linear_trait():
         h2opt.train_linear_conv_models(partial(h2opt.ImageConvModel, 2, 15), images, groups, None,
                                        train_test, 0.5, 0.3, n_linear_iter=0, n_iter=0,
                                        verbose=False)
+
+
+def test_train_linear_conv_models_with_equal_splits_and_levels_are_equal():
+    # the models of one split start from the same convolutional models and share every noise
+    # draw, so at equal levels they are the same model
+    images, groups, train_test = _image_data()
+    torch.manual_seed(0)
+    models = h2opt.train_linear_conv_models(
+        partial(h2opt.ImageConvModel, 2, 15), images, groups, None,
+        train_test[[0, 0]], 0.1, 0.3, n_traits=1, n_linear_iter=20, n_iter=20, verbose=False)
+    a, b = (h2opt.synthetic_traits(m, images, train_test[0] == 0) for m in models)
+    np.testing.assert_array_equal(a, b)

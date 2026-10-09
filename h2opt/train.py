@@ -78,22 +78,34 @@ def train_batch(models, X, groups, environment, train_rows, noise_sd, earlier=No
     their noise are not confounded with the draw. The loss is the sum of the negative
     heritabilities of the copies, and each copy's parameters get only its own gradient, so the
     result does not depend on which copies are trained together. With max_copies, at most that
-    many copies are trained at once (e.g. to fit large models in GPU memory), each chunk with its
-    own noise draws. A model can draw more noise in its forward pass in training mode (e.g.
-    LinearConvModel); these draws are different for each copy. The models are trained in training
-    mode and returned in evaluation mode. The other options are as in train. Returns models.
+    many copies are trained at once (e.g. to fit large models in GPU memory); every chunk starts
+    from the same random state, so the copies of chunks with the same individuals (the union of
+    their training rows) get the same draws. A model can draw more noise in its forward pass in
+    training mode (e.g. LinearConvModel); all copies share these draws too. The models are
+    trained in training mode and returned in evaluation mode. The other options are as in train.
+    Returns models.
     """
     n_copies = len(models)
-    if max_copies is not None and n_copies > max_copies:
-        train_rows = np.asarray(train_rows, dtype=bool).reshape((n_copies, -1))
-        noise_sd = np.broadcast_to(np.asarray(noise_sd, dtype=float), (n_copies,))
-        for start in range(0, n_copies, max_copies):
-            chunk = slice(start, start + max_copies)
-            train_batch(models[chunk], X, groups, environment, train_rows[chunk],
-                        noise_sd[chunk], None if earlier is None else earlier[chunk],
-                        n_iter, optimizer, learning_rate, noise, clip, device, subgroups,
-                        estimator)
-        return models
+    train_rows = np.asarray(train_rows, dtype=bool).reshape((n_copies, -1))
+    noise_sd = np.broadcast_to(np.asarray(noise_sd, dtype=float), (n_copies,))
+    size = n_copies if max_copies is None else max_copies
+    seed = int(torch.randint(2**62, (1,)))
+    cuda = torch.device(device).type == 'cuda'
+    devices = [torch.device(device).index or 0] if cuda else []
+    for start in range(0, n_copies, size):
+        chunk = slice(start, start + size)
+        with torch.random.fork_rng(devices):
+            torch.manual_seed(seed)
+            _train_batch(models[chunk], X, groups, environment, train_rows[chunk],
+                         noise_sd[chunk], None if earlier is None else earlier[chunk], n_iter,
+                         optimizer, learning_rate, noise, clip, device, subgroups, estimator)
+    return models
+
+
+def _train_batch(models, X, groups, environment, train_rows, noise_sd, earlier, n_iter,
+                 optimizer, learning_rate, noise, clip, device, subgroups, estimator):
+    """train_batch on one chunk of copies, all trained at once."""
+    n_copies = len(models)
     if optimizer not in _OPTIMIZERS:
         raise ValueError(f"optimizer must be 'adam' or 'rmsprop', not {optimizer!r}")
     if noise not in _NOISE:
@@ -142,7 +154,7 @@ def train_batch(models, X, groups, environment, train_rows, noise_sd, earlier=No
             return X @ W + noise_w * noise_sd.reshape((1, -1)) + params['lin1.bias'].T
         Z = draw(X.shape, device=device)
         sd = noise_sd.reshape((-1,) + (1,) * X.dim())
-        return vmap(forward, randomness='different')(params, buffers, X + Z * sd).T
+        return vmap(forward, randomness='same')(params, buffers, X + Z * sd).T
 
     def step():
         Y = noisy_traits()
@@ -302,7 +314,9 @@ def train_linear_conv_models(make_conv, X, groups, environment, train_test, line
     2. A TraitModels of LinearConvModel(make_conv(), w / s, b / s, ...) per model, with the
        weight w and bias b of each linear trait. s is the standard deviation of the output of
        that linear trait on the training individuals of the model, so each trait starts at the
-       linear trait with unit standard deviation. The linear trait stays fixed, and only the
+       linear trait with unit standard deviation. The models with the same train_test start from
+       the same make_conv() models (copies), so with the shared noise draws of train_batch they
+       differ only by conv_noise_sd. The linear trait stays fixed, and only the
        convolutional model trains, by train_models for n_iter steps with no shared input noise:
        the linear branch draws noise of standard deviation linear_noise_sd (as input noise),
        conv draws input noise of standard deviation conv_noise_sd.
@@ -335,9 +349,13 @@ def train_linear_conv_models(make_conv, X, groups, environment, train_test, line
     train_models(linear, flat, groups, environment, train_test[first], n_iter=n_linear_iter,
                  noise_sd=linear_sd[first], **options)
 
-    models = []
+    # the models with the same train_test start from the same convolutional models
+    starts, models = {}, []
     for b in range(n_models):
-        model = TraitModels(n_traits, make_conv)
+        key = train_test[b].tobytes()
+        if key not in starts:
+            starts[key] = TraitModels(n_traits, make_conv)
+        model = copy.deepcopy(starts[key])
         for t in range(n_traits):
             w = linear[stage[b]].models[t].lin1.weight.detach().cpu().numpy()
             bias = linear[stage[b]].models[t].lin1.bias.detach().cpu().numpy()

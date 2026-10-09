@@ -15,8 +15,7 @@ def test_select_noise_level_chooses_one_level_by_held_out_heritability(sorghum):
     assert noise_sd.shape == (1,) and scores.shape == (1, 2, 2)
     assert traits.shape == (1, 2, 2, len(groups))
     assert np.isfinite(scores).all()
-    chosen = levels[int(np.argmax(scores[0].mean(axis=0)))]
-    assert selection.best_level(levels, scores[0]) == chosen
+    chosen = selection.highest_level_within_one_se(levels, scores[0])
     assert noise_sd[0] == pytest.approx(chosen * selection.noise_scale(X))
     # the saved trait of split 0 at level 2 gives its score again
     val = folds.group_folds(groups, 3) == 0
@@ -52,14 +51,21 @@ def test_cross_validate_levels_scores_the_held_out_first_trait():
     assert scores[1, 1, 0] == pytest.approx(expected)
 
 
-def test_highest_level_within_one_se():
-    # splits x levels: level 1.0 is best (mean 0.54, SE 0.02); 10.0 (0.52) is within one SE
-    scores = np.array([[0.50, 0.52, 0.49], [0.54, 0.56, 0.55]])
-    assert selection.highest_level_within_one_se((0.1, 1.0, 10.0), scores) == 10.0
-    assert selection.highest_level_within_one_se((0.1, 1.0, 10.0), scores - [0, 0, 0.05]) == 1.0
+def test_highest_level_within_one_se_uses_the_paired_difference():
+    # splits x levels: level 1.0 is best (mean 0.50). Level 10.0 is 0.01 lower on every split:
+    # the paired difference has SE 0, so it is not within one SE, although the SE of the best
+    # level's mean over the splits (0.1) is large
+    scores = np.array([[0.50, 0.60, 0.59], [0.30, 0.40, 0.39]])
+    levels = (0.1, 1.0, 10.0)
+    assert selection.highest_level_within_one_se(levels, scores) == 1.0
+    # differences -0.02 and 0.04 from the best: mean 0.01, SE 0.03, so 10.0 is within one SE
+    scores = np.array([[0.50, 0.60, 0.62], [0.30, 0.40, 0.36]])
+    assert selection.highest_level_within_one_se(levels, scores) == 10.0
     # axes before the splits (e.g. sets) are averaged first
     stacked = np.stack([scores, scores - [0, 0, 0.1]])
-    assert selection.highest_level_within_one_se((0.1, 1.0, 10.0), stacked) == 1.0
+    assert selection.highest_level_within_one_se(levels, stacked) == 1.0
+    with pytest.raises(ValueError, match='2 splits'):
+        selection.highest_level_within_one_se(levels, scores[:1])
 
 
 def test_select_noise_level_on_subsets_ignores_the_other_individuals(sorghum):

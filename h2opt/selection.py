@@ -7,13 +7,15 @@ scored: a mean over all traits rewards more regularization, which spreads the he
 over more traits (the first traits lose heritability and the later traits gain it). The first
 trait also needs no earlier traits, so only it is fitted.
 
-Two rules choose from the scores, one for each kind of choice:
-- best_level, for the strength of one model's regularization: H2-opt's noise
-  (select_noise_level) and PCH's ridge (h2opt.baselines.PCH.tune).
-- highest_level_within_one_se, for the convolutional branch of LinearConvModel
-  (score_linear_conv_levels): a high level makes the branch add almost nothing, so the choice is
-  between the linear model and the linear model plus a CNN, and the simpler model is kept unless
-  the CNN raises the held-out heritability by more than one standard error.
+One rule chooses from the scores (highest_level_within_one_se), for every choice of a
+regularization level: H2-opt's noise (select_noise_level), PCH's ridge (h2opt.baselines.PCH.tune)
+and the noise of the convolutional branch of LinearConvModel (score_linear_conv_levels). A higher
+level is a simpler model: more noise or ridge, and at the highest levels the convolutional branch
+adds almost nothing, so the hybrid is the linear model. The rule keeps the simplest level whose
+held-out heritability is within one standard error of the best, where the standard error is that
+of the paired difference from the best level over the same validation splits. The levels of one
+split are trained from the same start with the same noise draws (train_batch), so the difference
+between two levels is not confounded with the start or the draws.
 """
 
 import copy
@@ -35,26 +37,21 @@ def noise_scale(X):
     return float(np.sqrt(np.mean(np.var(np.asarray(X, dtype=float), axis=0))))
 
 
-def best_level(levels, scores):
-    """The level with the best score averaged over all axes but the last (scores: (..., levels)),
-    the rule for the strength of one model's regularization. With the scores of levels from
-    separate runs stacked on the last axis, it gives the choice of one run over all of them."""
-    scores = np.asarray(scores)
-    return levels[int(np.argmax(scores.reshape((-1, scores.shape[-1])).mean(axis=0)))]
-
-
 def highest_level_within_one_se(levels, scores):
     """The highest level whose mean score is within one standard error of the best mean score,
-    the rule for the convolutional branch of LinearConvModel.
+    the rule for every choice of a level.
 
     scores: (..., splits, levels); the axes before the splits (e.g. measurement sets) are
-    averaged first. The standard error is that of the best level's mean over the splits."""
+    averaged first. The standard error of a level is that of its paired difference from the best
+    level over the splits, so at least 2 splits are needed."""
     levels = np.asarray(levels, dtype=float)
     scores = np.asarray(scores)
     per_split = scores.reshape((-1,) + scores.shape[-2:]).mean(axis=0)
+    if len(per_split) < 2:
+        raise ValueError('the standard error needs scores of at least 2 splits')
     mean = per_split.mean(axis=0)
     best = int(np.argmax(mean))
-    se = per_split[:, best].std(ddof=1) / np.sqrt(len(per_split))
+    se = (per_split[:, [best]] - per_split).std(axis=0, ddof=1) / np.sqrt(len(per_split))
     return float(levels[mean >= mean[best] - se].max())
 
 
@@ -111,7 +108,8 @@ def cross_validate_levels(fit, groups, environment, levels, subsets=None, n_spli
 def select_noise_level(make_model, X, groups, environment, subsets=None, levels=NOISE_LEVELS,
                        n_splits=5, n_folds=5, seed=0, subgroups=None, estimator='anova',
                        split_units=None, **train_options):
-    """Noise of H2-opt, one level for all traits: cross_validate_levels and best_level.
+    """Noise of H2-opt, one level for all traits: cross_validate_levels and
+    highest_level_within_one_se.
 
     The method fits the first trait as in train: a model make_model() (a module mapping the
     measurements of n individuals to (n, 1)) with normal noise of standard deviation level *
@@ -123,7 +121,7 @@ def select_noise_level(make_model, X, groups, environment, subsets=None, levels=
     noise_scale(X) of the subset, for train; the (k, n_splits, n_levels) scores; and the
     (k, n_splits, n_levels, n) float32 traits); with a list of sets, noise_sd (one per set:
     (k, sets)), scores and traits have a set axis after the first. The chosen level of subset i
-    is best_level(levels, scores[i]).
+    is highest_level_within_one_se(levels, scores[i]).
     """
     sets = [np.asarray(x) for x in (X if isinstance(X, list | tuple) else [X])]
     all_rows = np.ones((1, len(sets[0])), dtype=bool) if subsets is None else np.asarray(subsets)
@@ -150,7 +148,8 @@ def select_noise_level(make_model, X, groups, environment, subsets=None, levels=
 
     scores, traits = cross_validate_levels(fit, groups, environment, levels, all_rows, n_splits,
                                            n_folds, seed, subgroups, estimator, split_units)
-    chosen = np.array([best_level(levels, scores[i]) for i in range(len(all_rows))])
+    chosen = np.array([highest_level_within_one_se(levels, scores[i])
+                       for i in range(len(all_rows))])
     noise_sd = chosen[:, None] * scales
     if not isinstance(X, list | tuple):
         noise_sd, scores, traits = noise_sd[:, 0], scores[:, 0], traits[:, 0]

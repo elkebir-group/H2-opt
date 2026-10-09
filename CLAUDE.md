@@ -32,7 +32,7 @@ installs this checkout as an editable sibling (`../H2-opt`).
 | `decorrelation.py` | `Decorrelation`: traits made uncorrelated on training individuals, in order |
 | `baselines.py` | PCA, genetic PCA, PCH (ridge; `RIDGES` = squared noise levels; `PCH.tune` by `cross_validate_levels`), most heritable features |
 | `folds.py` | `group_folds`, `per_group` |
-| `selection.py` | one procedure for every method: held-out heritability of the first trait at each level (`cross_validate_levels`), and two rules: `best_level` for regularization strength (H2-opt's noise: `select_noise_level`; PCH's ridge: `PCH.tune`), `highest_level_within_one_se` for the convolutional branch of `LinearConvModel` (`score_linear_conv_levels`) |
+| `selection.py` | one procedure for every method: held-out heritability of the first trait at each level (`cross_validate_levels`), and one rule for every level, `highest_level_within_one_se` (the simplest level within one SE of the best; SE of the paired difference over splits): H2-opt's noise (`select_noise_level`), PCH's ridge (`PCH.tune`), the convolutional branch of `LinearConvModel` (`score_linear_conv_levels`) |
 | `simulate.py` | `AutoEncoder` (tanh, one hidden layer); `latent_scale`, `reconstruction_residuals`, `encode_latent`: latent traits to simulated spectra (decoder linearized at the latent means, plus the residual of a random real measurement) |
 | `io.py` | `load_npz` |
 

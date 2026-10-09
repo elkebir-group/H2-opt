@@ -13,7 +13,7 @@ from scipy.sparse.linalg import eigsh
 
 from .decorrelation import Decorrelation
 from .heritability import _as_environment, anova_heritability, heritability_design
-from .selection import NOISE_LEVELS, best_level, cross_validate_levels
+from .selection import NOISE_LEVELS, cross_validate_levels, highest_level_within_one_se
 
 # Ridges of PCH: the squares of H2-opt's noise levels (1e-6 to 1e4). PCH penalizes
 # ridge * v * |w|^2 with v the mean variance of the measurements, the penalty that normal input
@@ -205,15 +205,15 @@ class PCH(LinearBaseline):
              estimator='anova', split_units=None):
         """Choose the ridge by the held-out heritability of the first trait: the procedure and the
         rule of H2-opt's noise level (h2opt.selection.cross_validate_levels on n_folds splits,
-        best_level).
+        highest_level_within_one_se).
 
         For each fold of the groups (or of the split_units, labels of the individuals) and each
         ridge, the first PCH trait is fitted on the other folds and scored by its heritability
         (by the same estimator) on the held-out fold. X is one (n, p) array, or a list of arrays
         of the same individuals (e.g. one per date); then one ridge serves all of them, PCH is
         fitted to each, and the score is the mean over them.
-        Returns (the ridge with the best mean score, the scores (len(ridges),) averaged over the
-        folds, and the (n_folds, len(ridges)) fold scores).
+        Returns (the chosen ridge, the scores (len(ridges),) averaged over the folds, and the
+        (n_folds, len(ridges)) fold scores).
         """
         sets = [np.asarray(x) for x in (X if isinstance(X, list | tuple) else [X])]
         groups = np.asarray(groups)
@@ -241,7 +241,8 @@ class PCH(LinearBaseline):
         scores, _ = cross_validate_levels(fit, groups, environment, ridges, None, n_folds, n_folds,
                                           seed, subgroups, estimator, split_units)
         fold_scores = scores[0].mean(axis=0)
-        return best_level(ridges, fold_scores), fold_scores.mean(axis=0), fold_scores
+        ridge = highest_level_within_one_se(ridges, fold_scores)
+        return ridge, fold_scores.mean(axis=0), fold_scores
 
 
 class MaxHeritabilityFeatures:
