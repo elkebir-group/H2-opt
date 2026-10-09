@@ -11,7 +11,14 @@ from .heritability import (
     heritability_design,
 )
 from .io import load_npz
-from .models import ConvModel, ImageConvModel, LinearConvModel, LinearModel, TraitModels
+from .models import (
+    ConvModel,
+    ImageConvModel,
+    LinearConvModel,
+    LinearModel,
+    PositionImageConvModel,
+    TraitModels,
+)
 from .simulate import AutoEncoder, encode_latent, latent_scale, reconstruction_residuals
 from .train import synthetic_traits, train, train_batch, train_linear_conv_models, train_models
 
@@ -23,6 +30,7 @@ __all__ = [
     "Decorrelation",
     "Henderson3",
     "ImageConvModel",
+    "PositionImageConvModel",
     "LinearConvModel",
     "LinearModel",
     "TraitModels",

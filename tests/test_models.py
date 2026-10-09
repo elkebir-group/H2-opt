@@ -17,6 +17,15 @@ def test_image_conv_model_pools_over_the_image():
     assert model(torch.rand(5, 6, 15, 20)).shape == (5, 2)
 
 
+
+def test_position_image_conv_model_has_a_weight_per_position():
+    model = h2opt.TraitModels(2, h2opt.PositionImageConvModel, 6, 63)
+    # 63 -> 20 -> 6 positions per side, 10 channels
+    assert model.models[0].lin1.in_features == 10 * 6 * 6
+    assert model(torch.rand(5, 6, 63, 63)).shape == (5, 2)
+    assert h2opt.PositionImageConvModel(6, (63, 30))(torch.rand(5, 6, 63, 30)).shape == (5, 1)
+
+
 def test_linear_conv_model_is_the_linear_map_plus_conv():
     torch.manual_seed(0)
     linear = h2opt.LinearModel(6 * 20 * 20)

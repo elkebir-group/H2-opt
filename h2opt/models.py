@@ -61,6 +61,31 @@ class ImageConvModel(nn.Module):
         return self.lin1(x.mean(axis=(2, 3)))
 
 
+class PositionImageConvModel(nn.Module):
+    """The convolutions of ImageConvModel, then a linear layer with a weight for each position
+    (no pooling).
+
+    Input is (n, n_channels, height, width); image_size is height (= width) or (height, width).
+    Use it when the position of a pattern in the image matters, e.g. images centered on one
+    individual with its neighbors at the edges: the trait can weight the center and the edges
+    differently.
+    """
+
+    def __init__(self, n_channels, image_size, n_out=1):
+        super().__init__()
+        self.nonlin = nn.LeakyReLU()
+        self.conv1 = nn.Conv2d(n_channels, 10, 6, stride=3)
+        self.conv2 = nn.Conv2d(10, 10, 4, stride=3)
+        height, width = (image_size, image_size) if isinstance(image_size, int) else image_size
+        size = [((length - 6) // 3 + 1 - 4) // 3 + 1 for length in (height, width)]
+        self.lin1 = nn.Linear(10 * size[0] * size[1], n_out)
+
+    def forward(self, x):
+        x = self.nonlin(self.conv1(x))
+        x = self.nonlin(self.conv2(x))
+        return self.lin1(x.reshape((x.shape[0], -1)))
+
+
 class LinearConvModel(nn.Module):
     """A linear map of the flattened input plus a convolutional model, trained together.
 
