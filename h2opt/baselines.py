@@ -204,16 +204,16 @@ class PCH(LinearBaseline):
     def tune(cls, X, groups, environment, ridges=RIDGES, n_folds=5, seed=0, subgroups=None,
              estimator='anova', split_units=None):
         """Choose the ridge by the held-out heritability of the first trait: the procedure and the
-        rule of H2-opt's noise level (h2opt.selection.cross_validate_levels on n_folds splits,
-        highest_level_within_one_se).
+        rule of H2-opt's noise level (h2opt.selection.cross_validate_levels, n_folds splits per
+        partition, highest_level_within_one_se).
 
-        For each fold of the groups (or of the split_units, labels of the individuals) and each
-        ridge, the first PCH trait is fitted on the other folds and scored by its heritability
-        (by the same estimator) on the held-out fold. X is one (n, p) array, or a list of arrays
-        of the same individuals (e.g. one per date); then one ridge serves all of them, PCH is
-        fitted to each, and the score is the mean over them.
-        Returns (the chosen ridge, the scores (len(ridges),) averaged over the folds, and the
-        (n_folds, len(ridges)) fold scores).
+        For each fold of each partition of the groups (or of the split_units, labels of the
+        individuals) and each ridge, the first PCH trait is fitted on the other folds and scored
+        by its heritability (by the same estimator) on the held-out fold. X is one (n, p) array,
+        or a list of arrays of the same individuals (e.g. one per date); then one ridge serves all
+        of them, PCH is fitted to each, and the score is the mean over them.
+        Returns (the chosen ridge, the scores (len(ridges),) averaged over the splits, and the
+        (splits, len(ridges)) split scores; splits = h2opt.selection.N_PARTITIONS * n_folds).
         """
         sets = [np.asarray(x) for x in (X if isinstance(X, list | tuple) else [X])]
         groups = np.asarray(groups)

@@ -1,8 +1,10 @@
 """Choosing a regularization level by the held-out heritability of the first trait.
 
 One procedure for every method (cross_validate_levels): the groups of each subset of the
-individuals are split into validation folds; the method fits its first trait at each level on
-the other folds, and the score is its heritability on the held-out fold. Only the first trait is
+individuals are split into validation folds, N_PARTITIONS times with different seeds; the method
+fits its first trait at each level on the other folds, and the score is its heritability on the
+held-out fold. One partition of 5 splits gives too few splits for a stable standard error: the
+chosen level can change a lot with the seed of the partition. Only the first trait is
 scored: a mean over all traits rewards more regularization, which spreads the heritable signal
 over more traits (the first traits lose heritability and the later traits gain it). The first
 trait also needs no earlier traits, so only it is fitted.
@@ -30,6 +32,10 @@ from .train import synthetic_traits, train_batch, train_linear_conv_models
 # Noise levels of H2-opt: the standard deviation of the normal input noise as a fraction of
 # noise_scale(X), the typical spread of a measurement; 0.001 to 100 in quarter-decade steps.
 NOISE_LEVELS = tuple(float(s) for s in np.logspace(-3, 2, 21))
+
+# Partitions of each subset into validation folds (seeds seed, seed + 1, ...); every level choice
+# averages over all their splits.
+N_PARTITIONS = 4
 
 
 def noise_scale(X):
@@ -62,15 +68,18 @@ def cross_validate_levels(fit, groups, environment, levels, subsets=None, n_spli
     Within each subset of the individuals (subsets: (k, n) boolean, e.g. the training individuals
     of k outer folds; default: one subset of all), the groups (or the split_units, labels of the
     individuals; e.g. np.arange(n) to split individuals) are assigned to n_folds folds
-    (group_folds with seed); each of the first n_splits folds is the held-out fold of one
-    validation split. A copy is one (subset, split, level). fit(fit_rows, subset, level) fits the
+    (group_folds), N_PARTITIONS times, with seeds seed, seed + 1, ...; in each partition, each of
+    the first n_splits folds is the held-out fold of one validation split, so there are
+    N_PARTITIONS * n_splits splits (split p * n_splits + j: fold j of partition p). A copy is one
+    (subset, split, level). fit(fit_rows, subset, level) fits the
     method once per copy, all copies in one call so that a method can batch them: fit_rows
     (copies, n) boolean, the training individuals of each copy; subset and level (copies,), the
     index of its subset and its level. It returns the first trait of each copy for all n
     individuals, (copies, n), or (sets, copies, n) for several measurement sets of the same
     individuals. The score of a copy is the heritability of its trait on its held-out fold
-    (estimator and subgroups as in h2opt.train). Returns ((k, n_splits, n_levels) scores and the
-    (k, n_splits, n_levels, n) float32 traits; with sets, a set axis after the first).
+    (estimator and subgroups as in h2opt.train). Returns ((k, splits, n_levels) scores and the
+    (k, splits, n_levels, n) float32 traits, splits = N_PARTITIONS * n_splits; with sets, a set
+    axis after the first).
     """
     groups = np.asarray(groups)
     environment = _as_environment(environment, len(groups))
@@ -79,18 +88,19 @@ def cross_validate_levels(fit, groups, environment, levels, subsets=None, n_spli
     subsets = np.ones((1, len(groups)), dtype=bool) if subsets is None else np.asarray(subsets)
     copies, fit_rows, held_out = [], [], []
     for i, subset in enumerate(subsets):
-        fold = np.full(len(groups), -1)
-        fold[subset] = group_folds(units[subset], n_folds, seed)
-        for split in range(n_splits):
-            for a in range(len(levels)):
-                copies.append((i, split, a))
-                fit_rows.append(subset & (fold != split))
-                held_out.append(fold == split)
+        for partition in range(N_PARTITIONS):
+            fold = np.full(len(groups), -1)
+            fold[subset] = group_folds(units[subset], n_folds, seed + partition)
+            for j in range(n_splits):
+                for a in range(len(levels)):
+                    copies.append((i, partition * n_splits + j, a))
+                    fit_rows.append(subset & (fold != j))
+                    held_out.append(fold == j)
     traits = np.asarray(fit(np.array(fit_rows), np.array([i for i, _, _ in copies]),
                             np.array([levels[a] for _, _, a in copies], dtype=float)))
     one_set = traits.ndim == 2
     traits = traits.reshape((-1, len(copies), len(groups)))
-    shape = (len(subsets), len(traits), n_splits, len(levels))
+    shape = (len(subsets), len(traits), N_PARTITIONS * n_splits, len(levels))
     scores = np.zeros(shape)
     out = np.zeros(shape + (len(groups),), dtype=np.float32)
     # the levels of one (subset, split) share the held-out fold: one heritability design for all
@@ -124,9 +134,10 @@ def select_noise_level(make_model, X, groups, environment, subsets=None, levels=
     individuals), or a list of arrays of the same individuals (e.g. one per date): then every set
     is trained and scored, and one level serves all sets by their mean score. The other arguments
     are as in cross_validate_levels. Returns (noise_sd of each subset (k,), the chosen level times
-    noise_scale(X) of the subset, for train; the (k, n_splits, n_levels) scores; and the
-    (k, n_splits, n_levels, n) float32 traits); with a list of sets, noise_sd (one per set:
-    (k, sets)), scores and traits have a set axis after the first. The chosen level of subset i
+    noise_scale(X) of the subset, for train; the (k, splits, n_levels) scores; and the
+    (k, splits, n_levels, n) float32 traits, splits as in cross_validate_levels); with a list
+    of sets, noise_sd (one per set: (k, sets)), scores and traits have a set axis after the
+    first. The chosen level of subset i
     is highest_level_within_one_se(levels, scores[i]).
     """
     sets = [np.asarray(x) for x in (X if isinstance(X, list | tuple) else [X])]
@@ -177,7 +188,8 @@ def score_linear_conv_levels(make_conv, X, groups, environment, linear_noise_sd,
     level); train_options go to train_linear_conv_models (e.g. n_linear_iter, n_iter, device,
     max_copies). The other arguments are as in cross_validate_levels. One level per call is
     enough: the scores of a level do not depend on the other levels. Returns the
-    (k, n_splits, n_levels) scores and the (k, n_splits, n_levels, n) float32 traits.
+    (k, splits, n_levels) scores and the (k, splits, n_levels, n) float32 traits (splits as in
+    cross_validate_levels).
     """
     X = np.asarray(X)
     flat = X.reshape((len(X), -1))

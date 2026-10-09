@@ -119,7 +119,7 @@ noise_sd, scores, traits = select_noise_level(lambda: LinearModel(X.shape[1]), X
 train(model, X, groups, environment, train_test, n_traits=n_traits, noise_sd=noise_sd[0])
 ```
 
-Within each subset of the individuals (`subsets`, e.g. the training individuals of several outer folds, all chosen in one batch), the groups are split (`h2opt.folds.group_folds`) into 5 folds, and each fold is the held-out groups of one validation split (`n_folds`; `n_splits` uses only the first folds).
+Within each subset of the individuals (`subsets`, e.g. the training individuals of several outer folds, all chosen in one batch), the groups are split (`h2opt.folds.group_folds`) into 5 folds, and each fold is the held-out groups of one validation split (`n_folds`; `n_splits` uses only the first folds). The split into folds is repeated `N_PARTITIONS` = 4 times with different seeds, so a choice rests on 20 splits: with one partition of 5 splits, the standard error is not stable and the chosen level can change a lot with the seed.
 The levels are `NOISE_LEVELS` (0.001 to 100, quarter-decade steps), the one grid of every method. The chosen level has the best held-out heritability averaged over the splits.
 All subsets, splits and levels are trained together by `train_batch`.
 It returns the noise standard deviation of each subset for `train`: the chosen level times `noise_scale` of the subset's measurements.
