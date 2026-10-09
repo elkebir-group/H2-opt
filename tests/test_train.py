@@ -246,7 +246,7 @@ def test_vmap_randomness_leaves_models_without_draws_unchanged(monkeypatch):
                 return torch.func.vmap(function)
             monkeypatch.setattr(sys.modules['h2opt.train'], 'vmap', default_vmap)
         torch.manual_seed(0)
-        models = [h2opt.TraitModels(2, h2opt.ImageConvModel, 2, 15) for _ in train_test]
+        models = [h2opt.TraitModels(2, h2opt.ImageConvModel, 2) for _ in train_test]
         h2opt.train_models(models, images, groups, None, train_test, n_traits=2, n_iter=20,
                            noise_sd=0.3, verbose=False)
         results.append([h2opt.synthetic_traits(m, images, r == 0)
@@ -255,48 +255,41 @@ def test_vmap_randomness_leaves_models_without_draws_unchanged(monkeypatch):
         np.testing.assert_array_equal(a, b)
 
 
-def start_scale(model, X, rows):
-    """Standard deviation of the output of trait 1 of model on the training rows."""
-    with torch.no_grad():
-        return model.models[1](torch.tensor(X[rows == 0])).std(unbiased=False).item()
-
-
 def test_train_linear_conv_models_starts_at_the_linear_traits():
     images, groups, train_test = _image_data()
     flat = images.reshape((len(images), -1))
     options = dict(n_traits=2, n_linear_iter=50, verbose=False)
-    # with no second-stage steps, the traits are the first-stage linear traits, each with unit
-    # standard deviation on the training individuals
+    # with no second-stage steps, the linear branch of each trait is the first-stage linear
+    # trait with unit standard deviation on the training individuals
     torch.manual_seed(0)
-    start = h2opt.train_linear_conv_models(partial(h2opt.ImageConvModel, 2, 15), images, groups,
+    start = h2opt.train_linear_conv_models(partial(h2opt.ImageConvModel, 2), images, groups,
                                            None, train_test, 0.5, 0.3, n_iter=0, **options)
     torch.manual_seed(0)
     linear = [h2opt.TraitModels(2, h2opt.LinearModel, flat.shape[1]) for _ in train_test]
     h2opt.train_models(linear, flat, groups, None, train_test, n_iter=50, noise_sd=0.5,
                        verbose=False, n_traits=2)
     for model, reference, rows in zip(start, linear, train_test, strict=True):
-        expected = h2opt.synthetic_traits(reference, flat, rows == 0)
-        np.testing.assert_allclose(h2opt.synthetic_traits(model, images, rows == 0)[:, 0],
-                                   expected[:, 0] / expected[rows == 0, 0].std(), atol=1e-4)
-        np.testing.assert_allclose(h2opt.synthetic_traits(model, images, rows == 0)[:, 1:],
-                                   expected[:, 1:] / start_scale(reference, flat, rows), atol=1e-4)
+        for t in range(2):
+            w = reference.models[t].lin1.weight.detach()
+            s = (torch.tensor(flat[rows == 0]) @ w.T).std(unbiased=False)
+            torch.testing.assert_close(model.models[t].weight, w / s, atol=1e-5, rtol=1e-4)
         assert torch.allclose(model.models[1].linear_noise_sd, torch.tensor(0.5))
         assert torch.allclose(model.models[1].conv_noise_sd, torch.tensor(0.3))
     torch.manual_seed(0)
-    models = h2opt.train_linear_conv_models(partial(h2opt.ImageConvModel, 2, 15), images, groups,
+    models = h2opt.train_linear_conv_models(partial(h2opt.ImageConvModel, 2), images, groups,
                                             None, train_test, 0.5, 0.3, n_iter=20, **options)
     for model, first, rows in zip(models, start, train_test, strict=True):
         traits = h2opt.synthetic_traits(model, images, rows == 0)
         assert traits.shape == (60, 2) and np.isfinite(traits).all()
         assert not model.models[0].training
-        # the linear map stays fixed and the CNN trains
-        assert torch.equal(model.models[0].weight, first.models[0].weight)
-        assert model.models[0].conv.lin1.weight.abs().sum() > 0
+        # the linear map and the CNN train together
+        assert not torch.equal(model.models[0].weight, first.models[0].weight)
+        assert not torch.equal(model.models[0].conv.lin1.weight, first.models[0].conv.lin1.weight)
 
 
 def test_train_linear_conv_models_shares_the_linear_stage_of_equal_splits():
     images, groups, train_test = _image_data()
-    make_conv = partial(h2opt.ImageConvModel, 2, 15)
+    make_conv = partial(h2opt.ImageConvModel, 2)
     options = dict(n_linear_iter=50, n_iter=0, verbose=False)
     # each split twice, at two convolutional noise levels
     torch.manual_seed(0)
@@ -315,7 +308,7 @@ def test_train_linear_conv_models_shares_the_linear_stage_of_equal_splits():
 def test_train_batch_returns_every_copy_in_evaluation_mode():
     images, groups, train_test = _image_data()
     for max_copies in (None, 2):
-        models = [h2opt.ImageConvModel(2, 15) for _ in range(4)]
+        models = [h2opt.ImageConvModel(2) for _ in range(4)]
         rows = np.concatenate([train_test, train_test])[:4] == 0
         h2opt.train_batch(models, images, groups, None, rows, np.full(4, 0.1), n_iter=3,
                           max_copies=max_copies)
@@ -324,7 +317,7 @@ def test_train_batch_returns_every_copy_in_evaluation_mode():
 
 def test_train_linear_conv_models_returns_every_model_in_evaluation_mode():
     images, groups, train_test = _image_data()
-    models = h2opt.train_linear_conv_models(partial(h2opt.ImageConvModel, 2, 15), images, groups,
+    models = h2opt.train_linear_conv_models(partial(h2opt.ImageConvModel, 2), images, groups,
                                             None, train_test, 0.5, 0.3, n_traits=2,
                                             n_linear_iter=5, n_iter=3, verbose=False)
     assert len(models) > 1
@@ -335,7 +328,7 @@ def test_train_linear_conv_models_rejects_a_constant_linear_trait():
     images, groups, train_test = _image_data()
     images = np.ones_like(images)
     with pytest.raises(ValueError, match='constant'):
-        h2opt.train_linear_conv_models(partial(h2opt.ImageConvModel, 2, 15), images, groups, None,
+        h2opt.train_linear_conv_models(partial(h2opt.ImageConvModel, 2), images, groups, None,
                                        train_test, 0.5, 0.3, n_linear_iter=0, n_iter=0,
                                        verbose=False)
 
@@ -346,7 +339,7 @@ def test_train_linear_conv_models_with_equal_splits_and_levels_are_equal():
     images, groups, train_test = _image_data()
     torch.manual_seed(0)
     models = h2opt.train_linear_conv_models(
-        partial(h2opt.ImageConvModel, 2, 15), images, groups, None,
+        partial(h2opt.ImageConvModel, 2), images, groups, None,
         train_test[[0, 0]], 0.1, 0.3, n_traits=1, n_linear_iter=20, n_iter=20, verbose=False)
     a, b = (h2opt.synthetic_traits(m, images, train_test[0] == 0) for m in models)
     np.testing.assert_array_equal(a, b)

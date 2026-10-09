@@ -11,9 +11,9 @@ One rule chooses from the scores (highest_level_within_one_se), for every choice
 regularization level: H2-opt's noise (select_noise_level), PCH's ridge (h2opt.baselines.PCH.tune)
 and the noise of the convolutional branch of LinearConvModel (score_linear_conv_levels). A higher
 level is a simpler model: more noise or ridge, and at the highest levels the convolutional branch
-adds almost nothing, so the hybrid is the linear model. The rule keeps the simplest level whose
-held-out heritability is within one standard error of the best, where the standard error is that
-of the paired difference from the best level over the same validation splits. The levels of one
+sees mostly noise, so the hybrid stays near the linear model. The rule keeps the simplest level
+whose held-out heritability is within one standard error of the best, where the standard error is
+that of the paired difference from the best level over the same validation splits. The levels of one
 split are trained from the same start with the same noise draws (train_batch), so the difference
 between two levels is not confounded with the start or the draws.
 """

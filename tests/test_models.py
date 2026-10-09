@@ -9,29 +9,32 @@ def test_conv_model_output_shape(sorghum):
     assert model(torch.tensor(X[:5]).float()).shape == (5, 2)
 
 
-def test_image_conv_model_output_shape():
-    model = h2opt.TraitModels(2, h2opt.ImageConvModel, 6, 63)
-    assert model.models[0].lin1.in_features == 360
+def test_image_conv_model_pools_over_the_image():
+    model = h2opt.TraitModels(2, h2opt.ImageConvModel, 6)
+    assert model.models[0].lin1.in_features == 10
     assert model(torch.rand(5, 6, 63, 63)).shape == (5, 2)
+    # any image size of at least 15 x 15
+    assert model(torch.rand(5, 6, 15, 20)).shape == (5, 2)
 
 
-def test_linear_conv_model_starts_at_the_linear_map():
+def test_linear_conv_model_is_the_linear_map_plus_conv():
     torch.manual_seed(0)
     linear = h2opt.LinearModel(6 * 20 * 20)
-    model = h2opt.LinearConvModel(h2opt.ImageConvModel(6, 20), linear.lin1.weight.detach(),
-                                  linear.lin1.bias.detach(), 0.5, 0.3)
+    conv = h2opt.ImageConvModel(6)
+    model = h2opt.LinearConvModel(conv, linear.lin1.weight.detach(), linear.lin1.bias.detach(),
+                                  0.5, 0.3)
     x = torch.rand(5, 6, 20, 20)
     model.eval()
     with torch.no_grad():
-        torch.testing.assert_close(model(x), linear(x.reshape((5, -1))), rtol=0, atol=0)
-    # only conv has parameters: the linear map is fixed
-    assert {name.split('.')[0] for name, _ in model.named_parameters()} == {'conv'}
+        torch.testing.assert_close(model(x), linear(x.reshape((5, -1))) + conv(x))
+    # both branches train: the linear map is a parameter, and conv keeps its random start
+    names = {name.split('.')[0] for name, _ in model.named_parameters()}
+    assert names == {'weight', 'bias', 'conv'}
+    assert conv.lin1.weight.abs().sum() > 0
     # in training mode each branch is noisy
     model.train()
     assert not torch.equal(model(x), model(x))
-    only_conv = h2opt.LinearConvModel(h2opt.ImageConvModel(6, 20), torch.zeros(2400),
+    only_conv = h2opt.LinearConvModel(h2opt.ImageConvModel(6), torch.zeros(2400),
                                       torch.zeros(1), 0.0, 0.3)
-    with torch.no_grad():
-        only_conv.conv.lin1.weight.fill_(0.1)
     only_conv.train()
     assert not torch.equal(only_conv(x), only_conv(x))

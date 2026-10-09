@@ -314,15 +314,15 @@ def train_linear_conv_models(make_conv, X, groups, environment, train_test, line
     2. A TraitModels of LinearConvModel(make_conv(), w / s, b / s, ...) per model, with the
        weight w and bias b of each linear trait. s is the standard deviation of the output of
        that linear trait on the training individuals of the model, so each trait starts at the
-       linear trait with unit standard deviation. The models with the same train_test start from
-       the same make_conv() models (copies), so with the shared noise draws of train_batch they
-       differ only by conv_noise_sd. The linear trait stays fixed, and only the
-       convolutional model trains, by train_models for n_iter steps with no shared input noise:
-       the linear branch draws noise of standard deviation linear_noise_sd (as input noise),
-       conv draws input noise of standard deviation conv_noise_sd.
+       linear trait with unit standard deviation, plus the output of a new convolutional model.
+       The models with the same train_test start from the same make_conv() models (copies), so
+       with the shared noise draws of train_batch they differ only by conv_noise_sd. The linear
+       map and the convolutional model train together, by train_models for n_iter steps with no
+       shared input noise: the linear branch draws noise of standard deviation linear_noise_sd
+       (as input noise), conv draws input noise of standard deviation conv_noise_sd.
 
     make_conv: a function with no arguments that returns a new convolutional model, e.g.
-    functools.partial(ImageConvModel, n_channels, image_size). X: the input of the convolutional
+    functools.partial(ImageConvModel, n_channels). X: the input of the convolutional
     model, with individuals on the first axis. train_test: (B, n) array, the train_test of each of
     the B models. linear_noise_sd, conv_noise_sd: as noise_sd in train_models. Both stages train
     trait t on top of traits 0..t-1 of the same stage. The first stage trains trait t of all

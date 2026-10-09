@@ -40,35 +40,36 @@ class ConvModel(nn.Module):
 
 class ImageConvModel(nn.Module):
     """Two 2D convolutions (10 channels each; kernel 6, stride 3, then kernel 4, stride 3; leaky
-    ReLU), then a linear layer.
+    ReLU), the mean of each channel over the image (global average pooling), then a linear layer.
 
-    Input is (n, n_channels, height, width), e.g. a multispectral image per individual;
-    image_size is height (= width) or (height, width).
+    Input is (n, n_channels, height, width), e.g. a multispectral image per individual, of any
+    size of at least 15 x 15. The pooling makes the trait the same wherever a local pattern is in
+    the image, and keeps the linear layer at 10 weights per output, so the model does not learn
+    a weight for each position.
     """
 
-    def __init__(self, n_channels, image_size, n_out=1):
+    def __init__(self, n_channels, n_out=1):
         super().__init__()
         self.nonlin = nn.LeakyReLU()
         self.conv1 = nn.Conv2d(n_channels, 10, 6, stride=3)
         self.conv2 = nn.Conv2d(10, 10, 4, stride=3)
-        height, width = (image_size, image_size) if isinstance(image_size, int) else image_size
-        size = [((length - 6) // 3 + 1 - 4) // 3 + 1 for length in (height, width)]
-        self.lin1 = nn.Linear(10 * size[0] * size[1], n_out)
+        self.lin1 = nn.Linear(10, n_out)
 
     def forward(self, x):
         x = self.nonlin(self.conv1(x))
         x = self.nonlin(self.conv2(x))
-        return self.lin1(x.reshape((x.shape[0], -1)))
+        return self.lin1(x.mean(axis=(2, 3)))
 
 
 class LinearConvModel(nn.Module):
-    """A fixed linear map of the flattened input plus a trainable convolutional model.
+    """A linear map of the flattened input plus a convolutional model, trained together.
 
     conv is a module with a final linear layer lin1 and one output, e.g. ConvModel or
-    ImageConvModel. The linear map x w^T + b is fixed: w (1, m) and b (1,) are buffers (e.g. a
-    trait of linear H2-opt), m is the number of input values per individual, and only conv
-    trains. The constructor sets the weight and bias of conv.lin1 to zero, so the model starts at
-    exactly the linear map, as a zero-initialized branch added to a frozen model.
+    ImageConvModel. The linear map x w^T + b starts at the weight w (1, m) and bias b (1,) given
+    (e.g. a trait of linear H2-opt), m is the number of input values per individual. Both
+    branches are parameters: the linear map and conv train together, and conv keeps its own
+    random initialization. So the model can move away from the linear trait in any direction,
+    also toward a trait that the linear map does not have.
 
     In training mode, each branch draws its own noise: the linear branch gets normal noise of
     standard deviation linear_noise_sd |w| per individual on its output, the same as input noise
@@ -79,13 +80,11 @@ class LinearConvModel(nn.Module):
     def __init__(self, conv, weight, bias, linear_noise_sd, conv_noise_sd):
         super().__init__()
         weight = torch.as_tensor(weight, dtype=torch.float32).reshape((1, -1))
-        self.register_buffer('weight', weight)
-        self.register_buffer('bias', torch.as_tensor(bias, dtype=torch.float32).reshape((1,)))
+        self.weight = nn.Parameter(weight.clone())
+        self.bias = nn.Parameter(torch.as_tensor(bias, dtype=torch.float32).reshape((1,)).clone())
         self.register_buffer('linear_noise_sd', torch.tensor(float(linear_noise_sd)))
         self.register_buffer('conv_noise_sd', torch.tensor(float(conv_noise_sd)))
         self.conv = conv
-        nn.init.zeros_(conv.lin1.weight)
-        nn.init.zeros_(conv.lin1.bias)
 
     def forward(self, x):
         linear = F.linear(x.reshape((x.shape[0], -1)), self.weight, self.bias)
