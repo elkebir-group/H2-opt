@@ -93,13 +93,19 @@ def cross_validate_levels(fit, groups, environment, levels, subsets=None, n_spli
     shape = (len(subsets), len(traits), n_splits, len(levels))
     scores = np.zeros(shape)
     out = np.zeros(shape + (len(groups),), dtype=np.float32)
+    # the levels of one (subset, split) share the held-out fold: one heritability design for all
+    together = {}
+    for c, (i, split, _) in enumerate(copies):
+        together.setdefault((i, split), []).append(c)
     for k, set_traits in enumerate(traits):
-        for c, (i, split, a) in enumerate(copies):
-            rows = held_out[c]
-            scores[i, k, split, a] = heritability(
-                set_traits[c][rows, None], groups[rows], environment[rows],
-                None if subgroups is None else subgroups[rows], estimator)[0]
-            out[i, k, split, a] = set_traits[c]
+        for (i, split), cs in together.items():
+            rows = held_out[cs[0]]
+            values = heritability(
+                set_traits[cs][:, rows].T, groups[rows], environment[rows],
+                None if subgroups is None else subgroups[rows], estimator)
+            for c, value in zip(cs, values, strict=True):
+                scores[i, k, split, copies[c][2]] = value
+                out[i, k, split, copies[c][2]] = set_traits[c]
     if one_set:
         scores, out = scores[:, 0], out[:, 0]
     return scores, out
