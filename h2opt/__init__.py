@@ -1,36 +1,52 @@
 """H2-opt: self-supervised discovery of heritable traits in high-throughput phenotyping data."""
 
-from . import baselines
+from . import baselines, folds, selection
+from .decorrelation import Decorrelation
 from .heritability import (
+    ESTIMATORS,
     AnovaDesign,
     Henderson3,
     anova_heritability,
-    genetic_covariance,
-    grouped_variance,
-    remove_environment,
+    heritability,
+    heritability_design,
 )
 from .io import load_npz
-from .linear import LinearH2opt
-from .models import AutoEncoder, ConvModel, LinearModel, TraitModels
-from .simulate import encode_latent
-from .train import decorrelate, project_out, train
+from .models import (
+    ConvModel,
+    ImageConvModel,
+    LinearConvModel,
+    LinearModel,
+    PositionImageConvModel,
+    TraitModels,
+)
+from .simulate import AutoEncoder, encode_latent, latent_scale, reconstruction_residuals
+from .train import synthetic_traits, train, train_batch, train_linear_conv_models, train_models
 
 __all__ = [
+    "ESTIMATORS",
     "AnovaDesign",
     "AutoEncoder",
     "ConvModel",
+    "Decorrelation",
     "Henderson3",
-    "LinearH2opt",
+    "ImageConvModel",
+    "PositionImageConvModel",
+    "LinearConvModel",
     "LinearModel",
     "TraitModels",
     "anova_heritability",
     "baselines",
-    "decorrelate",
+    "folds",
+    "selection",
     "encode_latent",
-    "genetic_covariance",
-    "grouped_variance",
+    "heritability",
+    "heritability_design",
+    "latent_scale",
     "load_npz",
-    "project_out",
-    "remove_environment",
+    "reconstruction_residuals",
+    "synthetic_traits",
     "train",
+    "train_batch",
+    "train_linear_conv_models",
+    "train_models",
 ]

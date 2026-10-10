@@ -1,7 +1,8 @@
-"""Models mapping HTP measurements to synthetic traits, and the autoencoder used for simulation."""
+"""Models mapping HTP measurements to synthetic traits."""
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 class LinearModel(nn.Module):
@@ -37,6 +38,88 @@ class ConvModel(nn.Module):
         return self.lin1(x)
 
 
+class ImageConvModel(nn.Module):
+    """Two 2D convolutions (10 channels each; kernel 6, stride 3, then kernel 4, stride 3; leaky
+    ReLU), the mean of each channel over the image (global average pooling), then a linear layer.
+
+    Input is (n, n_channels, height, width), e.g. a multispectral image per individual, of any
+    size of at least 15 x 15. The pooling makes the trait the same wherever a local pattern is in
+    the image, and keeps the linear layer at 10 weights per output, so the model does not learn
+    a weight for each position.
+    """
+
+    def __init__(self, n_channels, n_out=1):
+        super().__init__()
+        self.nonlin = nn.LeakyReLU()
+        self.conv1 = nn.Conv2d(n_channels, 10, 6, stride=3)
+        self.conv2 = nn.Conv2d(10, 10, 4, stride=3)
+        self.lin1 = nn.Linear(10, n_out)
+
+    def forward(self, x):
+        x = self.nonlin(self.conv1(x))
+        x = self.nonlin(self.conv2(x))
+        return self.lin1(x.mean(axis=(2, 3)))
+
+
+class PositionImageConvModel(nn.Module):
+    """The convolutions of ImageConvModel, then a linear layer with a weight for each position
+    (no pooling).
+
+    Input is (n, n_channels, height, width); image_size is height (= width) or (height, width).
+    Use it when the position of a pattern in the image matters, e.g. images centered on one
+    individual with its neighbors at the edges: the trait can weight the center and the edges
+    differently.
+    """
+
+    def __init__(self, n_channels, image_size, n_out=1):
+        super().__init__()
+        self.nonlin = nn.LeakyReLU()
+        self.conv1 = nn.Conv2d(n_channels, 10, 6, stride=3)
+        self.conv2 = nn.Conv2d(10, 10, 4, stride=3)
+        height, width = (image_size, image_size) if isinstance(image_size, int) else image_size
+        size = [((length - 6) // 3 + 1 - 4) // 3 + 1 for length in (height, width)]
+        self.lin1 = nn.Linear(10 * size[0] * size[1], n_out)
+
+    def forward(self, x):
+        x = self.nonlin(self.conv1(x))
+        x = self.nonlin(self.conv2(x))
+        return self.lin1(x.reshape((x.shape[0], -1)))
+
+
+class LinearConvModel(nn.Module):
+    """A linear map of the flattened input plus a convolutional model, trained together.
+
+    conv is a module with a final linear layer lin1 and one output, e.g. ConvModel or
+    ImageConvModel. The linear map x w^T + b starts at the weight w (1, m) and bias b (1,) given
+    (e.g. a trait of linear H2-opt), m is the number of input values per individual. Both
+    branches are parameters: the linear map and conv train together, and conv keeps its own
+    random initialization. So the model can move away from the linear trait in any direction,
+    also toward a trait that the linear map does not have.
+
+    In training mode, each branch draws its own noise: the linear branch gets normal noise of
+    standard deviation linear_noise_sd |w| per individual on its output, the same as input noise
+    of standard deviation linear_noise_sd for a linear map; conv gets normal input noise of
+    standard deviation conv_noise_sd. Train it with no input noise from train_batch (noise_sd 0).
+    """
+
+    def __init__(self, conv, weight, bias, linear_noise_sd, conv_noise_sd):
+        super().__init__()
+        weight = torch.as_tensor(weight, dtype=torch.float32).reshape((1, -1))
+        self.weight = nn.Parameter(weight.clone())
+        self.bias = nn.Parameter(torch.as_tensor(bias, dtype=torch.float32).reshape((1,)).clone())
+        self.register_buffer('linear_noise_sd', torch.tensor(float(linear_noise_sd)))
+        self.register_buffer('conv_noise_sd', torch.tensor(float(conv_noise_sd)))
+        self.conv = conv
+
+    def forward(self, x):
+        linear = F.linear(x.reshape((x.shape[0], -1)), self.weight, self.bias)
+        if self.training:
+            linear = linear + (torch.randn((x.shape[0], 1), device=x.device)
+                               * self.linear_noise_sd * torch.linalg.norm(self.weight))
+            x = x + torch.randn_like(x) * self.conv_noise_sd
+        return linear + self.conv(x)
+
+
 class TraitModels(nn.Module):
     """One independent model per synthetic trait.
 
@@ -56,37 +139,3 @@ class TraitModels(nn.Module):
         for a, trait in enumerate(traits):
             out[:, a] = self.models[trait](x)[:, 0]
         return out
-
-
-class AutoEncoder(nn.Module):
-    """Tanh autoencoder with one hidden layer, which embeds latent traits into simulated spectra."""
-
-    def __init__(self, n_features, n_latent, hidden=100):
-        super().__init__()
-        self.nonlin = torch.tanh
-        self.linE1 = nn.Linear(n_features, hidden)
-        self.linE2 = nn.Linear(hidden, n_latent)
-        self.linD1 = nn.Linear(n_latent, hidden)
-        self.linD2 = nn.Linear(hidden, n_features)
-
-    def forward(self, x):
-        x = self.encode(x)
-        x = x + 0.005 * torch.randn(x.shape).to(x.device)
-        return self.decode(x)
-
-    def encode(self, x):
-        return self.nonlin(self.linE2(self.nonlin(self.linE1(x))))
-
-    def decode(self, x):
-        return self.linD2(self.nonlin(self.linD1(x)))
-
-    def save(self, path):
-        torch.save({'n_features': self.linE1.in_features, 'n_latent': self.linE2.out_features,
-                    'hidden': self.linE1.out_features, 'state_dict': self.state_dict()}, path)
-
-    @classmethod
-    def load(cls, path):
-        checkpoint = torch.load(path, weights_only=True)
-        model = cls(checkpoint['n_features'], checkpoint['n_latent'], checkpoint['hidden'])
-        model.load_state_dict(checkpoint['state_dict'])
-        return model

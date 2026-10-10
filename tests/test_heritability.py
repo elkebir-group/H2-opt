@@ -40,3 +40,45 @@ def test_henderson3_is_unbiased_with_confounded_environment():
              + r.normal(size=30)[environment[:, 1]] + 2 * environment[:, 0])
         estimates.append(model.components(torch.tensor(y)).numpy()[:, 0])
     np.testing.assert_allclose(np.mean(estimates, axis=0), [1.0, 0.49, 1.0], atol=0.03)
+
+
+def test_henderson3_forms_give_its_heritability():
+    rng = np.random.RandomState(1)
+    groups = np.repeat(np.arange(20), 6)
+    subgroups = np.tile(np.repeat(np.arange(2), 3), 20)
+    environment = rng.randint(4, size=(120, 1))
+    model = h2opt.Henderson3(groups, environment, subgroups=subgroups)
+    A, B = model.forms()
+    Y = rng.normal(size=(120, 5)) + rng.normal(size=(20, 5))[groups]
+    ratio = np.einsum('ik,ij,jk->k', Y, A, Y) / np.einsum('ik,ij,jk->k', Y, B, Y)
+    np.testing.assert_allclose(ratio, model.heritability(torch.tensor(Y)).numpy(), rtol=1e-10)
+    np.testing.assert_allclose(
+        h2opt.heritability(Y, groups, environment, subgroups, 'henderson3'), ratio, rtol=1e-10)
+    np.testing.assert_allclose(h2opt.heritability(Y, groups, environment),
+                               h2opt.anova_heritability(Y, groups, environment), rtol=1e-12)
+
+
+def test_henderson3_rows_give_each_column_its_own_individuals():
+    rng = np.random.RandomState(2)
+    groups = np.repeat(np.arange(30), 4)
+    subgroups = np.tile([0, 0, 1, 1], 30)
+    environment = rng.randint(3, size=120)
+    rows = rng.rand(120, 3) < [0.6, 0.8, 0.6]
+    rows[:, 2] = rows[:, 0]
+    Y = torch.tensor(rng.normal(size=(120, 3)) + rng.normal(size=(30, 3))[groups])
+    together = h2opt.Henderson3(groups, environment, subgroups, rows=rows).heritability(Y)
+    for j in range(3):
+        r = rows[:, j]
+        alone = h2opt.Henderson3(groups[r], environment[r], subgroups[r]).heritability(Y[r, j])
+        assert together[j].item() == pytest.approx(alone.item(), rel=1e-10)
+
+
+def test_anova_forms_give_its_heritability(sorghum):
+    X, groups, environment = sorghum
+    X, groups, environment = X[:300, ::50], groups[:300], environment[:300]
+    A, B = h2opt.AnovaDesign(groups, environment).forms()
+    w = np.random.RandomState(0).normal(size=(X.shape[1], 4))
+    Y = X @ w
+    expected = h2opt.anova_heritability(Y, groups, environment)
+    ratio = np.einsum('ik,ij,jk->k', Y, A, Y) / np.einsum('ik,ij,jk->k', Y, B, Y)
+    np.testing.assert_allclose(ratio, expected, rtol=1e-8)

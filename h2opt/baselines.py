@@ -2,15 +2,24 @@
 
 Each baseline is a linear map fitted on training individuals: fit(X, groups, environment) then
 transform(X). Traits are centered by the training mean and made uncorrelated on the training
-individuals (Gram-Schmidt in order), like H2-opt's traits. All computations happen in the span of
+individuals by Decorrelation, like H2-opt's traits. All computations happen in the span of
 the centered training data, so the number of measurements may far exceed the number of individuals
 (e.g. image pixels).
 """
 
 import numpy as np
-import torch
+import scipy.linalg
+from scipy.sparse.linalg import eigsh
 
-from .heritability import anova_heritability
+from .decorrelation import Decorrelation
+from .heritability import _as_environment, anova_heritability, heritability_design
+from .selection import NOISE_LEVELS, cross_validate_levels, highest_level_within_one_se
+
+# Ridges of PCH: the squares of H2-opt's noise levels (1e-6 to 1e4). PCH penalizes
+# ridge * v * |w|^2 with v the mean variance of the measurements, the penalty that normal input
+# noise of standard deviation sqrt(ridge * v) adds to a linear trait, so ridge s^2 matches H2-opt
+# at noise level s.
+RIDGES = tuple(s**2 for s in NOISE_LEVELS)
 
 
 def _group_center(Z, labels):
@@ -35,6 +44,32 @@ def _top_generalized(A, B, k, tol=1e-10):
     return whiten @ V[:, ::-1][:, :k]
 
 
+def _top_symmetric(matrix, k):
+    """Eigenvectors of the k largest eigenvalues of the symmetric matrix, largest first."""
+    n = matrix.shape[0]
+    if k > n:
+        raise ValueError(f'at most {n} traits can be extracted, {k} requested')
+    if n > 10 * k + 100:
+        # a few Lanczos iterations instead of the full decomposition
+        values, V = eigsh(matrix, k=k, which='LA', tol=0, v0=np.ones(n))
+    else:
+        values, V = scipy.linalg.eigh(matrix, subset_by_index=[n - k, n - 1])
+    return V[:, np.argsort(values)[::-1]]
+
+
+def _top_ridges(A, B, k, shifts):
+    """Top-k solutions of A w = l (B + s I) w for each shift s > 0, for symmetric A and positive
+    semidefinite B, scaled as by _top_generalized (w'(B + s I) w = 1). B + s I has the
+    eigenvectors of B, so one decomposition of B serves all shifts."""
+    values, U = np.linalg.eigh((B + B.T) / 2)
+    A = U.T @ ((A + A.T) / 2) @ U
+    directions = []
+    for s in shifts:
+        d = 1 / np.sqrt(np.maximum(values, 0) + s)
+        directions.append(U @ (d[:, None] * _top_symmetric(d[:, None] * A * d, k)))
+    return directions
+
+
 class LinearBaseline:
     """Shared fit/transform; subclasses define _directions(Z, ...) in training coordinates."""
 
@@ -42,26 +77,27 @@ class LinearBaseline:
         self.n_traits = n_traits
 
     def fit(self, X, groups, environment=None):
-        X = np.asarray(X, dtype=float)
+        X, Xc, V, Z = self._coordinates(X)
         groups = np.asarray(groups)
-        if environment is not None:
-            environment = np.asarray(environment)
-            if environment.ndim == 1:
-                environment = environment.reshape((-1, 1))
+        environment = _as_environment(environment, len(groups))
+        return self._finish(Xc, V @ self._directions(Z, groups, environment,
+                                                     n_features=X.shape[1]))
 
+    def _coordinates(self, X):
+        """X as floats, centered by its mean (set as mean_), and orthonormal coordinates Z of the
+        centered data: Xc = Z V'."""
+        X = np.asarray(X, dtype=float)
         self.mean_ = X.mean(axis=0)
         Xc = X - self.mean_
-        # orthonormal coordinates of the training data: Xc = Z V'
         _, s, Vt = np.linalg.svd(Xc, full_matrices=False)
         keep = s > s.max() * 1e-10
         V = Vt[keep].T
-        Z = Xc @ V
+        return X, Xc, V, Xc @ V
 
-        W = V @ self._directions(Z, groups, environment, n_features=X.shape[1])
-
-        # Gram-Schmidt on the training traits: Y = Q R, keep the scale of each trait's own component
-        _, R = np.linalg.qr(Xc @ W)
-        self.components_ = W @ np.linalg.inv(R) @ np.diag(np.diag(R))
+    def _finish(self, Xc, W):
+        """Set the map of the traits Xc W, made uncorrelated on the training individuals."""
+        # Xc @ W has mean 0, so the map of the decorrelated traits is linear in Xc
+        self.components_ = W @ Decorrelation().fit(Xc @ W).components_
         return self
 
     def transform(self, X):
@@ -101,56 +137,121 @@ class GeneticPCA(LinearBaseline):
         return V[:, ::-1][:, :self.n_traits]
 
 
-class LDA(LinearBaseline):
-    """Linear discriminant analysis: maximizes between-group over within-group variance.
-
-    Ignores environment and is unregularized; the within-group scatter is inverted on its range.
-    """
-
-    def _directions(self, Z, groups, environment, n_features):
-        within = _group_center(Z, groups)
-        between = Z - within
-        return _top_generalized(between.T @ between, within.T @ within, self.n_traits)
-
-
 class PCH(LinearBaseline):
     """Principal components of heritability with ridge regularization (Wang et al. 2007).
 
-    Maximizes w'A w / w'(B + ridge * tr(B) / p * I) w, where w'A w / w'B w is exactly the ANOVA
-    heritability of the trait X w (anova_heritability: environment means removed, groups with one
-    individual dropped) and p is the number of measurements. Successive traits maximize the same
-    ratio subject to being uncorrelated with the earlier ones. ridge = 0 gives unregularized PCH.
+    Maximizes w'A w / w'(B + ridge * tr(B) / p * I) w, where w'A w / w'B w is exactly the
+    heritability of the trait X w by the estimator (ESTIMATORS in h2opt.heritability) and p is the
+    number of measurements: 'anova', anova_heritability (environment means removed, groups with
+    one individual dropped), or 'henderson3', Henderson3(groups, environment, subgroups). Successive
+    traits maximize the same ratio subject to being uncorrelated with the earlier ones. ridge = 0
+    gives unregularized PCH.
     """
 
-    def __init__(self, n_traits, ridge=0.0):
+    def __init__(self, n_traits, ridge=0.0, estimator='anova'):
         super().__init__(n_traits)
         self.ridge = ridge
+        self.estimator = estimator
 
-    def _directions(self, Z, groups, environment, n_features):
-        _, inverse, counts = np.unique(groups, return_inverse=True, return_counts=True)
-        keep = counts[inverse] >= 2
-        Zc = Z[keep] - Z[keep].mean(axis=0)
-        Ze = Zc
-        if environment is not None:
-            for a in range(environment.shape[1]):
-                Ze = _group_center(Ze, environment[keep, a])
-        R = _group_center(Ze, groups[keep])
-        _, inverse_kept, counts_kept = np.unique(groups[keep], return_inverse=True,
-                                                 return_counts=True)
-        scale = (counts_kept / (counts_kept - 1.0))[inverse_kept]
+    def fit(self, X, groups, environment=None, subgroups=None):
+        fitted = self.fit_ridges(X, groups, environment, subgroups, self.n_traits, [self.ridge],
+                                 self.estimator)[0]
+        self.mean_, self.components_ = fitted.mean_, fitted.components_
+        return self
 
-        A = Ze.T @ Ze - R.T @ (R * scale[:, None])
-        B = Zc.T @ Zc
-        B = B + self.ridge * np.trace(B) / n_features * np.eye(B.shape[0])
-        return _top_generalized(A, B, self.n_traits)
+    def fit_transform(self, X, groups, environment=None, subgroups=None):
+        return self.fit(X, groups, environment, subgroups).transform(X)
+
+    @classmethod
+    def fit_ridges(cls, X, groups, environment, subgroups, n_traits, ridges, estimator='anova'):
+        """PCH fitted at each of the ridges; the decomposition of X and the heritability forms
+        are computed once. Returns a list of fitted PCH."""
+        start = cls(n_traits, estimator=estimator)
+        X, Xc, V, Z = start._coordinates(X)
+        groups = np.asarray(groups)
+        environment = _as_environment(environment, len(groups))
+        A, B = heritability_design(estimator, groups, environment, subgroups).forms()
+        A, B = Z.T @ A @ Z, Z.T @ B @ Z
+        shifts = [ridge * np.trace(B) / X.shape[1] for ridge in ridges]
+        positive = [s for s in shifts if s > 0]
+        top = dict(zip(positive, _top_ridges(A, B, n_traits, positive), strict=True))
+        fitted = []
+        for ridge, shift in zip(ridges, shifts, strict=True):
+            pch = cls(n_traits, ridge, estimator)
+            pch.mean_ = start.mean_
+            W = top[shift] if shift > 0 else _top_generalized(A, B, n_traits)
+            fitted.append(pch._finish(Xc, V @ W))
+        return fitted
+
+    def _coordinates(self, X):
+        """As LinearBaseline._coordinates, from the eigendecomposition of the smaller of the
+        Gram matrix Xc Xc' and the scatter matrix Xc'Xc rather than the SVD of Xc (faster when the
+        measurements far outnumber the individuals, or the reverse); directions with singular value
+        at most 1e-6 of the largest are dropped."""
+        X = np.asarray(X, dtype=float)
+        self.mean_ = X.mean(axis=0)
+        Xc = X - self.mean_
+        if Xc.shape[0] <= Xc.shape[1]:
+            values, U = np.linalg.eigh(Xc @ Xc.T)
+            keep = values > values.max() * 1e-12
+            V = (Xc.T @ U[:, keep]) / np.sqrt(values[keep])
+        else:
+            values, V = np.linalg.eigh(Xc.T @ Xc)
+            V = V[:, values > values.max() * 1e-12]
+        return X, Xc, V, Xc @ V
+
+    @classmethod
+    def tune(cls, X, groups, environment, ridges=RIDGES, n_folds=5, seed=0, subgroups=None,
+             estimator='anova', split_units=None):
+        """Choose the ridge by the held-out heritability of the first trait: the procedure and the
+        rule of H2-opt's noise level (h2opt.selection.cross_validate_levels, n_folds splits per
+        partition, highest_level_within_one_se).
+
+        For each fold of each partition of the groups (or of the split_units, labels of the
+        individuals) and each ridge, the first PCH trait is fitted on the other folds and scored
+        by its heritability (by the same estimator) on the held-out fold. X is one (n, p) array,
+        or a list of arrays of the same individuals (e.g. one per date); then one ridge serves all
+        of them, PCH is fitted to each, and the score is the mean over them.
+        Returns (the chosen ridge, the scores (len(ridges),) averaged over the splits, and the
+        (splits, len(ridges)) split scores; splits = h2opt.selection.N_PARTITIONS * n_folds).
+        """
+        sets = [np.asarray(x) for x in (X if isinstance(X, list | tuple) else [X])]
+        groups = np.asarray(groups)
+        environment = _as_environment(environment, len(groups))
+
+        def part(labels, rows):
+            return None if labels is None else np.asarray(labels)[rows]
+
+        def fit(fit_rows, subset, ridge):
+            # copies with the same training rows share one decomposition (fit_ridges)
+            out = np.zeros((len(sets), len(ridge), len(groups)))
+            same = {}
+            for c, rows in enumerate(fit_rows):
+                same.setdefault(rows.tobytes(), []).append(c)
+            for copies in same.values():
+                rows = fit_rows[copies[0]]
+                for k, measurements in enumerate(sets):
+                    fitted = cls.fit_ridges(measurements[rows], groups[rows], environment[rows],
+                                            part(subgroups, rows), 1, list(ridge[copies]),
+                                            estimator)
+                    for c, pch in zip(copies, fitted, strict=True):
+                        out[k, c] = pch.transform(measurements)[:, 0]
+            return out
+
+        scores, _ = cross_validate_levels(fit, groups, environment, ridges, None, n_folds, n_folds,
+                                          seed, subgroups, estimator, split_units)
+        fold_scores = scores[0].mean(axis=0)
+        ridge = highest_level_within_one_se(ridges, fold_scores)
+        return ridge, fold_scores.mean(axis=0), fold_scores
 
 
 class MaxHeritabilityFeatures:
     """Greedily select the n_traits most heritable measurements (features) on training individuals.
 
     After each pick, the chosen measurement is projected out of all others before the next pick.
-    transform returns the selected measurements, centered and made uncorrelated on the training
-    individuals.
+    A measurement that is constant, or whose residual falls below 1e-8 of its centered norm (it
+    lies in the span of the picks), is never picked. transform returns the selected measurements,
+    centered and made uncorrelated on the training individuals.
     """
 
     def __init__(self, n_traits):
@@ -160,27 +261,25 @@ class MaxHeritabilityFeatures:
         X = np.asarray(X, dtype=float)
         groups = np.asarray(groups)
         X_fit = X - X.mean(axis=0)
+        norms = np.linalg.norm(X_fit, axis=0)
+        alive = norms > 0
         chosen = []
         for _ in range(self.n_traits):
-            heritability = anova_heritability(torch.tensor(X_fit).float(), groups, environment)
-            heritability = heritability.numpy()
+            heritability = np.zeros(X.shape[1])
+            heritability[alive] = anova_heritability(X_fit[:, alive], groups, environment)
             heritability[np.isnan(heritability)] = 0
-            heritability[np.array(chosen, dtype=int)] = 0
+            heritability[~alive] = -np.inf
             best = int(np.argmax(heritability))
             chosen.append(best)
 
             u = np.copy(X_fit[:, best])
             X_fit = X_fit - np.outer(u, (u @ X_fit) / (u @ u))
-            # columns that became constant (including the chosen one) are replaced by a constant 1
-            scale = np.sum(np.abs(X_fit), axis=0)
-            X_fit[:, np.isnan(scale)] = 1
-            X_fit[:, scale < 1e-10] = 1
-            X_fit[:, best] = 1
+            alive &= np.linalg.norm(X_fit, axis=0) > 1e-8 * norms
+            alive[best] = False
 
         self.features_ = np.array(chosen)
-        self.mean_ = X[:, self.features_].mean(axis=0)
-        _, R = np.linalg.qr(X[:, self.features_] - self.mean_)
-        self.components_ = np.linalg.inv(R) @ np.diag(np.diag(R))
+        decorrelation = Decorrelation().fit(X[:, self.features_])
+        self.mean_, self.components_ = decorrelation.mean_, decorrelation.components_
         return self
 
     def transform(self, X):

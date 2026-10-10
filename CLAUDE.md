@@ -27,11 +27,13 @@ installs this checkout as an editable sibling (`../H2-opt`).
 
 | Module | Content |
 |---|---|
-| `heritability.py` | `anova_heritability`, `AnovaDesign`, `Henderson3`, `genetic_covariance` |
-| `models.py`, `train.py` | trait models and the RMSprop training loop of the paper |
-| `linear.py` | `LinearH2opt`: linear traits trained to convergence with L-BFGS in float64 |
-| `baselines.py` | PCA, genetic PCA, LDA, PCH (ridge), most heritable features |
-| `simulate.py` | `encode_latent`: latent traits to simulated spectra |
+| `heritability.py` | `anova_heritability`, `AnovaDesign`, `Henderson3`, `heritability` and `heritability_design` (either estimator, by name) |
+| `models.py`, `train.py` | trait models (`LinearModel`, `ConvModel` for spectra, `ImageConvModel` for images with global average pooling, `PositionImageConvModel` for images with a weight per position, `LinearConvModel`: a linear map plus a CNN, trained together); the training loop `train_batch` (many copies at once; fast for linear models), `train_models` (several models, e.g. one per fold) and `train` on it (Adam, or the paper's RMSprop), `synthetic_traits` |
+| `decorrelation.py` | `Decorrelation`: traits made uncorrelated on training individuals, in order |
+| `baselines.py` | PCA, genetic PCA, PCH (ridge; `RIDGES` = squared noise levels; `PCH.tune` by `cross_validate_levels`), most heritable features |
+| `folds.py` | `group_folds`, `per_group` |
+| `selection.py` | one procedure for every method: held-out heritability of the first trait at each level (`cross_validate_levels`; `N_PARTITIONS` = 4 partitions into validation folds), and one rule for every level, `highest_level_within_one_se` (the simplest level within one SE of the best; SE of the paired difference over splits): H2-opt's noise (`select_noise_level`), PCH's ridge (`PCH.tune`), the convolutional branch of `LinearConvModel` (`score_linear_conv_levels`) |
+| `simulate.py` | `AutoEncoder` (tanh, one hidden layer); `latent_scale`, `reconstruction_residuals`, `encode_latent`: latent traits to simulated spectra (decoder linearized at the latent means, plus the residual of a random real measurement) |
 | `io.py` | `load_npz` |
 
 ## Conventions: code, naming, prose
