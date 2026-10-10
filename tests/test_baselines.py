@@ -4,6 +4,7 @@ import torch
 
 import h2opt
 from h2opt import baselines, folds
+from h2opt.selection import highest_level_within_one_se
 
 
 def test_baselines(sorghum):
@@ -79,7 +80,7 @@ def test_pch_tune_scores_held_out_heritability(sorghum):
     ridges = (1e-3, 1.0)
     ridge, scores, fold_scores = baselines.PCH.tune(X, groups, environment, ridges=ridges,
                                                     n_folds=3)
-    assert ridge == ridges[int(np.argmax(scores))]
+    assert ridge == highest_level_within_one_se(ridges, fold_scores)
     # the score is the held-out heritability of the first trait
     fold = folds.group_folds(groups, 3)
     fit, val = fold != 0, fold == 0

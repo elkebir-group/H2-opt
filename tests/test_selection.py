@@ -73,6 +73,8 @@ def test_highest_level_within_one_se_uses_the_paired_difference():
     assert selection.highest_level_within_one_se(levels, stacked) == 1.0
     with pytest.raises(ValueError, match='2 splits'):
         selection.highest_level_within_one_se(levels, scores[:1])
+    with pytest.raises(ValueError, match=r'not finite at levels \[0.1\]'):
+        selection.highest_level_within_one_se(levels, np.where([[1, 0, 0]], np.nan, scores))
 
 
 def test_select_noise_level_on_subsets_ignores_the_other_individuals(sorghum):
@@ -112,7 +114,7 @@ def test_select_noise_level_on_several_measurement_sets_averages_their_scores(so
     splits = selection.N_PARTITIONS * 2
     assert both.shape == (1, 2, splits, 2) and traits.shape == (1, 2, splits, 2, len(groups))
     np.testing.assert_allclose(both[:, 0], first, atol=1e-4)
-    chosen = options['levels'][int(np.argmax(both[0].mean(axis=(0, 1))))]
+    chosen = selection.highest_level_within_one_se(options['levels'], both[0])
     # one level for both sets, each scaled by its own noise_scale
     np.testing.assert_allclose(noise_sd, [[chosen * selection.noise_scale(first_set),
                                            chosen * selection.noise_scale(second_set)]])

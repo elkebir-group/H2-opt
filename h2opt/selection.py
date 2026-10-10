@@ -55,6 +55,10 @@ def highest_level_within_one_se(levels, scores):
     per_split = scores.reshape((-1,) + scores.shape[-2:]).mean(axis=0)
     if len(per_split) < 2:
         raise ValueError('the standard error needs scores of at least 2 splits')
+    bad = ~np.isfinite(per_split).all(axis=0)
+    if bad.any():
+        raise ValueError(f'scores are not finite at levels {levels[bad].tolist()} (e.g. a '
+                         'trait that is constant on a held-out fold)')
     mean = per_split.mean(axis=0)
     best = int(np.argmax(mean))
     se = (per_split[:, [best]] - per_split).std(axis=0, ddof=1) / np.sqrt(len(per_split))
@@ -129,17 +133,22 @@ def select_noise_level(make_model, X, groups, environment, subsets=None, levels=
 
     The method fits the first trait as in train: a model make_model() (a module mapping the
     measurements of n individuals to (n, 1)) with normal noise of standard deviation level *
-    noise_scale(X) (X of the subset), all copies trained together by train_batch (train_options go
-    to it, e.g. n_iter, device, max_copies). X is one array of measurements (first axis:
-    individuals), or a list of arrays of the same individuals (e.g. one per date): then every set
-    is trained and scored, and one level serves all sets by their mean score. The other arguments
-    are as in cross_validate_levels. Returns (noise_sd of each subset (k,), the chosen level times
-    noise_scale(X) of the subset, for train; the (k, splits, n_levels) scores; and the
-    (k, splits, n_levels, n) float32 traits, splits as in cross_validate_levels); with a list
-    of sets, noise_sd (one per set: (k, sets)), scores and traits have a set axis after the
-    first. The chosen level of subset i
-    is highest_level_within_one_se(levels, scores[i]).
+    noise_scale(X) (X of the subset), all copies trained together by train_batch (train_options
+    go to it, e.g. n_iter, device, max_copies; max_copies must be a multiple of len(levels)). X
+    is one array of measurements (first axis: individuals), or a list of arrays of the same
+    individuals (e.g. one per date): then every set is trained and scored, and one level serves
+    all sets by their mean score. The other arguments are as in cross_validate_levels. Returns
+    (noise_sd of each subset (k,), the chosen level times noise_scale(X) of the subset, for
+    train; the (k, splits, n_levels) scores; and the (k, splits, n_levels, n) float32 traits,
+    splits as in cross_validate_levels); with a list of sets, noise_sd (one per set: (k, sets)),
+    scores and traits have a set axis after the first. The chosen level of subset i is
+    highest_level_within_one_se(levels, scores[i]).
     """
+    max_copies = train_options.get('max_copies')
+    if max_copies is not None and max_copies % len(levels):
+        # the levels of one split must train in one chunk, to share their noise draws
+        raise ValueError(f'max_copies ({max_copies}) must be a multiple of the number of levels '
+                         f'({len(levels)})')
     sets = [np.asarray(x) for x in (X if isinstance(X, list | tuple) else [X])]
     all_rows = np.ones((1, len(sets[0])), dtype=bool) if subsets is None else np.asarray(subsets)
     scales = np.array([[noise_scale(x[rows].reshape((rows.sum(), -1))) for x in sets]

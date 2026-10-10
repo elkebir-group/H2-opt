@@ -16,7 +16,7 @@ def test_heritability_does_not_modify_input(sorghum):
     X, groups, environment = sorghum
     Y = torch.tensor(X[:, :3]).float()
     Y_copy = Y.clone()
-    h2opt.anova_heritability(Y, groups, environment, return_variance=True)
+    h2opt.anova_heritability(Y, groups, environment)
     assert torch.equal(Y, Y_copy)
 
 
@@ -71,6 +71,12 @@ def test_henderson3_rows_give_each_column_its_own_individuals():
         r = rows[:, j]
         alone = h2opt.Henderson3(groups[r], environment[r], subgroups[r]).heritability(Y[r, j])
         assert together[j].item() == pytest.approx(alone.item(), rel=1e-10)
+    # one column of rows serves every column of Y
+    one = h2opt.Henderson3(groups, environment, subgroups, rows=rows[:, :1]).heritability(Y)
+    for j in range(3):
+        r = rows[:, 0]
+        alone = h2opt.Henderson3(groups[r], environment[r], subgroups[r]).heritability(Y[r, j])
+        assert one[j].item() == pytest.approx(alone.item(), rel=1e-10)
 
 
 def test_anova_forms_give_its_heritability(sorghum):

@@ -38,7 +38,7 @@ Groups with a single individual are ignored.
 
 `Henderson3(groups, environment, subgroups=None)` estimates heritability by Henderson's Method III, treating environment as fixed and groups (and optional subgroups nested in groups, e.g. plots of one family) as random effects.
 Unlike `anova_heritability`, it stays unbiased when environment and groups are confounded, and it separates shared subgroup effects from genetic variance.
-It precomputes n by n matrices for a fixed set of individuals, then `Henderson3(...).heritability(traits)` is differentiable.
+It keeps an orthonormal basis of each projection for a fixed set of individuals, then `Henderson3(...).heritability(traits)` is differentiable.
 `heritability(traits, groups, environment, subgroups, estimator)` computes either estimator (`ESTIMATORS`: `'anova'`, `'henderson3'`) on arrays.
 
 Example: the heritability of the first 10 wavelengths of the sorghum hyperspectral data in `data/examples` (the measurements are split over two files because of GitHub file size limits).
@@ -91,7 +91,7 @@ Options: `n_iter` steps per trait (default 10000); `optimizer`, `'adam'` (defaul
 `'rmsprop'` is the optimizer of the paper (constant learning rate). It converges slowly when the measurements are strongly correlated: the heritability does not change with the scale of a trait, so its steps shrink relative to the weights as the weights grow.
 `ConvModel` is a convolutional alternative to `LinearModel` for spectra, and `ImageConvModel(n_channels)` and `PositionImageConvModel(n_channels, image_size)` are two for multispectral images (input n x channels x height x width). `ImageConvModel` averages over the image; `PositionImageConvModel` has a weight per position, for images centered on one individual (the paper's Miscanthus model).
 
-`LinearConvModel(conv, weight, bias, linear_noise_sd, conv_noise_sd)` is a fixed linear map of the flattened input (`weight`, `bias`) plus a trainable convolutional model `conv` whose output layer starts at zero; so the model starts at exactly the linear map, and only `conv` trains.
+`LinearConvModel(conv, weight, bias, linear_noise_sd, conv_noise_sd)` is a linear map of the flattened input, which starts at `weight` and `bias`, plus a convolutional model `conv` with its own random initialization; both train together, so the model can move away from the linear trait in any direction.
 In training mode, each branch draws its own noise: the linear branch `linear_noise_sd` |w| per individual on its output (the same as input noise of that SD for a linear map), the convolutional model input noise of SD `conv_noise_sd`; so either branch can have more noise.
 `train_linear_conv_models(make_conv, X, groups, environment, train_test, linear_noise_sd, conv_noise_sd)` trains it in two stages for several data splits: linear H2-opt with noise `linear_noise_sd` (`n_linear_iter` steps, default 10000), then the sum, started at each linear trait with unit standard deviation on the training individuals (`n_iter` steps, default 1000). In the second stage the linear branch keeps noise `linear_noise_sd` and the convolutional model gets input noise `conv_noise_sd`, each drawn by the model itself.
 
@@ -106,7 +106,7 @@ Other models are trained with `torch.func.vmap`, which gives no speedup for `Con
 ### Choosing the noise level
 
 Every method chooses its regularization level by one procedure, `cross_validate_levels`: the groups are split into validation folds, the method fits its first trait at each level on the other folds, and the score is the heritability of that trait on the held-out fold. A method only supplies a function that fits all (subset, split, level) copies at once.
-`select_noise_level` uses it to choose one noise level of H2-opt for all traits, and `PCH.tune` to choose the ridge of PCH, both by `best_level` (the best mean score).
+`select_noise_level` uses it to choose one noise level of H2-opt for all traits, and `PCH.tune` to choose the ridge of PCH, both by `highest_level_within_one_se` (the highest level within one standard error of the best mean score; the SE of the paired difference over the splits).
 The first trait sets the level: a mean over all traits rewards high noise, which spreads the heritable signal over more traits (the first traits lose heritability and the later traits gain it). The first trait also needs no earlier traits, so selection trains only it.
 Each level is the standard deviation of normal noise as a fraction of `noise_scale(X)`, the root mean variance of the measurements, so the same levels apply to data on any scale.
 
@@ -125,8 +125,8 @@ All subsets, splits and levels are trained together by `train_batch`.
 It returns the noise standard deviation of each subset for `train`: the chosen level times `noise_scale` of the subset's measurements.
 Given a list of measurement sets of the same individuals (e.g. one per date), it trains and scores each set and chooses one level for all of them by their mean score; each set gets its own standard deviation, the level times its own `noise_scale`.
 With `split_units` (e.g. the individuals themselves), the validation folds split those units instead of the groups.
-`select_noise_level` also returns the scores (the chosen level is `best_level(levels, scores[i])`) and the trained validation traits for each subset, split and level. The traits of a level do not depend on the other levels, so another rule over the levels can be examined without training again.
-Levels can also be scored in separate runs (e.g. to extend the grid later): `best_level(levels, scores)` applies the same rule to their scores stacked on the last axis.
+`select_noise_level` also returns the scores (the chosen level is `highest_level_within_one_se(levels, scores[i])`) and the trained validation traits for each subset, split and level. The traits of a level do not depend on the other levels, so another rule over the levels can be examined without training again.
+Levels can also be scored in separate runs (e.g. to extend the grid later): `highest_level_within_one_se(levels, scores)` applies the same rule to their scores stacked on the last axis.
 
 For `LinearConvModel`, the linear branch keeps the level of linear H2-opt, and `score_linear_conv_levels` scores the first trait at each noise level of the convolutional branch on the same validation splits.
 The chosen level is the highest level whose score is within one standard error of the best (`highest_level_within_one_se`). A high level makes the convolutional branch add almost nothing, so the model stays at the linear trait unless the convolutional branch clearly raises the held-out heritability.
@@ -140,7 +140,7 @@ Their traits are centered and made uncorrelated on the training individuals (`De
 - `GeneticPCA(n_traits)`: principal components of the ANOVA estimate of the genetic covariance.
 - `PCH(n_traits, ridge, estimator='anova')`: principal components of heritability, maximizing the ANOVA heritability above (or, with `estimator='henderson3'` and `fit(X, groups, environment, subgroups)`, Henderson's Method III) with ridge regularization.
   Both estimators are ratios of quadratic forms in the trait, so the solution is exact. PCH works in the span of the training data, so the measurements may far outnumber the individuals (e.g. image pixels).
-  `PCH.tune` chooses the ridge from `RIDGES` (1e-6 to 1e4), the squares of H2-opt's `NOISE_LEVELS`: for a linear trait, ridge s^2 is the penalty of noise level s. It uses the procedure and the rule of `select_noise_level` (`cross_validate_levels`, `best_level`: the best mean held-out heritability of the first trait, with the same estimator; `split_units` as there); given a list of measurement sets of the same individuals (e.g. one per date), it chooses one ridge for all of them by their mean score.
+  `PCH.tune` chooses the ridge from `RIDGES` (1e-6 to 1e4), the squares of H2-opt's `NOISE_LEVELS`: for a linear trait, ridge s^2 is the penalty of noise level s. It uses the procedure and the rule of `select_noise_level` (`cross_validate_levels`, `highest_level_within_one_se` on the held-out heritability of the first trait, with the same estimator; `split_units` as there); given a list of measurement sets of the same individuals (e.g. one per date), it chooses one ridge for all of them by their mean score.
 - `MaxHeritabilityFeatures(n_traits)`: the most heritable individual features, selected greedily.
 
 ```python

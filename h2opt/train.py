@@ -72,18 +72,19 @@ def train_batch(models, X, groups, environment, train_rows, noise_sd, earlier=No
     models: B modules of one class, each mapping (n, m) measurements to an (n, 1) trait; they are
     trained in place. train_rows: (B, n) boolean array, the training individuals of each copy.
     noise_sd: length B, the noise standard deviation of each copy. earlier: None, or B arrays
-    (n, t_b) with the earlier traits of each copy for all individuals; in the loss, the trait of a
-    copy is its residual after least-squares regression on its earlier traits on its training rows.
-    All copies share each noise draw, scaled by their own noise_sd, so differences between
+    (n, t_b) with the earlier traits of each copy for all individuals; in the loss, the trait of
+    a copy is its residual after least-squares regression on its earlier traits on its training
+    rows. All copies share each noise draw, scaled by their own noise_sd, so differences between
     their noise are not confounded with the draw. The loss is the sum of the negative
-    heritabilities of the copies, and each copy's parameters get only its own gradient, so the
-    result does not depend on which copies are trained together. With max_copies, at most that
-    many copies are trained at once (e.g. to fit large models in GPU memory); every chunk starts
-    from the same random state, so the copies of chunks with the same individuals (the union of
-    their training rows) get the same draws. A model can draw more noise in its forward pass in
-    training mode (e.g. LinearConvModel); all copies share these draws too. The models are
-    trained in training mode and returned in evaluation mode. The other options are as in train.
-    Returns models.
+    heritabilities of the copies, and each copy's parameters get only its own gradient. With
+    max_copies, at most that many copies are trained at once (e.g. to fit large models in GPU
+    memory); every chunk starts from the same random state, so the copies of chunks with the
+    same individuals (the union of their training rows) get the same draws. A chunk with other
+    individuals draws other noise, so a copy's result can change with max_copies: train the
+    copies that must share draws (e.g. the levels of one split) in one chunk. A model can draw
+    more noise in its forward pass in training mode (e.g. LinearConvModel); all copies share
+    these draws too. The models are trained in training mode and returned in evaluation mode.
+    The other options are as in train. Returns models.
     """
     n_copies = len(models)
     train_rows = np.asarray(train_rows, dtype=bool).reshape((n_copies, -1))

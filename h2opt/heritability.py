@@ -64,13 +64,12 @@ class AnovaDesign:
             self._keep_float[dtype] = self._keep.to(dtype)
         return self._keep_float[dtype]
 
-    def heritability(self, Y, return_variance=False):
+    def heritability(self, Y):
         """See anova_heritability."""
         mask = self.keep(Y.dtype)
         n = mask.sum(axis=0)
         Y2 = (Y - (Y * mask).sum(axis=0) / n) * mask
-        if not return_variance:
-            Y2 = Y2 / ((torch.abs(Y2) * mask).sum(axis=0) / n)
+        Y2 = Y2 / ((torch.abs(Y2) * mask).sum(axis=0) / n)
         variance_total = torch.sum(Y2 ** 2, axis=0)
 
         if len(self.environment) == 0:
@@ -85,8 +84,6 @@ class AnovaDesign:
         within = (sums_sq - sums ** 2 / sizes.clamp(min=1)) * (sizes / (sizes - 1).clamp(min=1))
         variance_within = torch.sum(within, axis=0)
 
-        if return_variance:
-            return (variance_env - variance_within) / n, variance_total / n
         return (variance_env - variance_within) / variance_total
 
     def _remove_environment(self, Y, mask, n):
@@ -116,7 +113,7 @@ class AnovaDesign:
         return A.cpu().numpy(), (centered.T @ centered).cpu().numpy()
 
 
-def anova_heritability(Y, groups, environment=None, return_variance=False):
+def anova_heritability(Y, groups, environment=None):
     """ANOVA heritability of each column of the (n, k) tensor or array Y.
 
     groups: length-n labels of genetically related groups (e.g. clones or families).
@@ -125,18 +122,16 @@ def anova_heritability(Y, groups, environment=None, return_variance=False):
     The heritability is (V_env - V_within) / V_total, where V_env is the variance left after
     removing environmental group means and V_within the within-group variance. With clonal groups
     this is broad-sense heritability; for groups with genetic relatedness r, divide by r for
-    narrow-sense. Groups with a single member are dropped. With return_variance, returns (genetic
-    variance, total variance) per individual instead. For repeated calls on the same individuals,
-    use AnovaDesign.
+    narrow-sense. Groups with a single member are dropped. For repeated calls on the same
+    individuals, use AnovaDesign.
 
     A tensor gives tensors (differentiable in Y); an array is computed in float64 and gives arrays.
     """
     if isinstance(Y, torch.Tensor):
         design = AnovaDesign(groups, environment, Y.device)
-        return design.heritability(Y, return_variance)
+        return design.heritability(Y)
     Y = torch.tensor(np.asarray(Y, dtype=np.float64))
-    result = AnovaDesign(groups, environment).heritability(Y, return_variance)
-    return tuple(r.numpy() for r in result) if return_variance else result.numpy()
+    return AnovaDesign(groups, environment).heritability(Y).numpy()
 
 
 def _dummies(labels, drop_first=False):
@@ -198,7 +193,9 @@ class Henderson3:
             columns = torch.tensor(np.flatnonzero(self._set_of_column == s), device=device)
             self._sets.append((torch.tensor(r, device=device, dtype=torch.float64), padded,
                                torch.tensor(Cinv, device=device, dtype=torch.float64), columns))
-        # with rows, the columns of Y are fixed; without, any number of columns uses all rows
+        # with one column of rows (or none), it serves every column of Y; with k columns, Y has
+        # k columns
+        self._one_set = rows.shape[1] == 1
         self._mask = (torch.tensor(rows, device=device, dtype=torch.float64)
                       if rows.shape[1] > 1 or not rows.all() else None)
 
@@ -228,7 +225,7 @@ class Henderson3:
         Y = Y.to(torch.float64)
         if Y.dim() == 1:
             Y = Y[:, None]
-        if self._mask is None:
+        if self._one_set:
             mask, bases, Cinv, _ = self._sets[0]
             return Cinv @ self._quadratic(Y * mask[:, None], bases)
         components = torch.zeros((self.n_components, Y.shape[1]), dtype=Y.dtype, device=Y.device)
