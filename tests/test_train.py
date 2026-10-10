@@ -343,3 +343,47 @@ def test_train_linear_conv_models_with_equal_splits_and_levels_are_equal():
         train_test[[0, 0]], 0.1, 0.3, n_traits=1, n_linear_iter=20, n_iter=20, verbose=False)
     a, b = (h2opt.synthetic_traits(m, images, train_test[0] == 0) for m in models)
     np.testing.assert_array_equal(a, b)
+
+
+
+def _penalized_weights(X, groups, environment, penalty, n_iter, noise_sd=0.005):
+    torch.manual_seed(0)
+    model = h2opt.TraitModels(1, h2opt.LinearModel, X.shape[1])
+    h2opt.train(model, X, groups, environment, np.zeros(len(groups), dtype=int), n_iter=n_iter,
+                learning_rate=1e-3, noise_sd=noise_sd, penalty=penalty, verbose=False)
+    return model.models[0].lin1.weight.detach().numpy()[0]
+
+
+def test_penalty_of_zero_weight_changes_nothing(sorghum):
+    X, groups, environment = sorghum
+    np.testing.assert_array_equal(
+        _penalized_weights(X[:, ::20], groups, environment, None, 20),
+        _penalized_weights(X[:, ::20], groups, environment, ('l1', 0.0), 20))
+
+
+def test_l1_penalty_sends_the_weights_of_empty_features_to_zero(sorghum):
+    # with no noise, only the penalty acts on the weights of features that are zero for everyone
+    X, groups, environment = sorghum
+    X = np.concatenate([X[:, ::20], np.zeros((len(X), 50))], axis=1)
+
+    def empty_share(penalty):
+        w = np.abs(_penalized_weights(X, groups, environment, penalty, 1000, noise_sd=0.0))
+        return w[-50:].mean() / w[:-50].mean()
+
+    assert empty_share(('l1', 1e-4)) < 0.1 * empty_share(None)
+
+
+def test_tv_penalty_makes_the_weights_smoother(sorghum):
+    X, groups, environment = sorghum
+
+    def roughness(penalty):
+        w = _penalized_weights(X[:, ::20], groups, environment, penalty, 1000)
+        return np.abs(np.diff(w)).sum() / np.abs(w).sum()
+
+    assert roughness(('tv', 1e-4)) < 0.6 * roughness(None)
+
+
+def test_unknown_penalty(sorghum):
+    X, groups, environment = sorghum
+    with pytest.raises(ValueError):
+        _penalized_weights(X[:, ::20], groups, environment, ('l0', 1e-4), 1)

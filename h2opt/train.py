@@ -51,6 +51,27 @@ _OPTIMIZERS = {'adam': (_adam, _cosine), 'rmsprop': (_rmsprop, _constant)}
 _NOISE = {'uniform': torch.rand, 'normal': torch.randn}
 
 
+def _l1(params):
+    return sum(p.abs().flatten(1).sum(axis=1) for p in params.values())
+
+
+def _l2(params):
+    return sum((p ** 2).flatten(1).sum(axis=1) for p in params.values())
+
+
+def _tv(params):
+    # the weight matrices only: differences between neighboring features (the last axis)
+    return sum((p[..., 1:] - p[..., :-1]).abs().flatten(1).sum(axis=1)
+               for p in params.values() if p.dim() > 2)
+
+
+# Penalties on the stacked parameters of B copies, by name: (B,) values and the power of the
+# trait's spread that each is divided by, so that the penalty does not change with the scale of
+# the trait. l1: sum of absolute values; l2: sum of squares; tv: total variation, the sum of the
+# absolute differences between the weights of neighboring features.
+_PENALTIES = {'l1': (_l1, 1), 'l2': (_l2, 2), 'tv': (_tv, 1)}
+
+
 def _bases(earlier, rows, device):
     """(k, n, t) orthonormal bases of the earlier traits of k copies, each on its own training rows
     ((k, n) boolean) and zero on the other rows, padded with zero columns to the largest number t
@@ -66,7 +87,7 @@ def _bases(earlier, rows, device):
 
 def train_batch(models, X, groups, environment, train_rows, noise_sd, earlier=None,
                 n_iter=10000, optimizer='adam', learning_rate=1e-3, noise='normal', clip=None,
-                device='cpu', subgroups=None, estimator='anova', max_copies=None):
+                penalty=None, device='cpu', subgroups=None, estimator='anova', max_copies=None):
     """Train one trait in each of several models at once; each copy is trained as by train.
 
     models: B modules of one class, each mapping (n, m) measurements to an (n, 1) trait; they are
@@ -99,18 +120,21 @@ def train_batch(models, X, groups, environment, train_rows, noise_sd, earlier=No
             torch.manual_seed(seed)
             _train_batch(models[chunk], X, groups, environment, train_rows[chunk],
                          noise_sd[chunk], None if earlier is None else earlier[chunk], n_iter,
-                         optimizer, learning_rate, noise, clip, device, subgroups, estimator)
+                         optimizer, learning_rate, noise, clip, penalty, device, subgroups,
+                         estimator)
     return models
 
 
 def _train_batch(models, X, groups, environment, train_rows, noise_sd, earlier, n_iter,
-                 optimizer, learning_rate, noise, clip, device, subgroups, estimator):
+                 optimizer, learning_rate, noise, clip, penalty, device, subgroups, estimator):
     """train_batch on one chunk of copies, all trained at once."""
     n_copies = len(models)
     if optimizer not in _OPTIMIZERS:
         raise ValueError(f"optimizer must be 'adam' or 'rmsprop', not {optimizer!r}")
     if noise not in _NOISE:
         raise ValueError(f"noise must be 'uniform' or 'normal', not {noise!r}")
+    if penalty is not None and penalty[0] not in _PENALTIES:
+        raise ValueError(f"penalty must be 'l1', 'l2' or 'tv', not {penalty[0]!r}")
     train_rows = np.asarray(train_rows, dtype=bool).reshape((n_copies, -1))
     groups = np.asarray(groups)
     environment = np.asarray(environment) if environment is not None else None
@@ -160,11 +184,16 @@ def _train_batch(models, X, groups, environment, train_rows, noise_sd, earlier, 
     def step():
         Y = noisy_traits()
         Y = (Y - (Y * mask).sum(axis=0) / n_train) * mask
+        spread = Y.abs().sum(axis=0) / n_train
         Y = Y - torch.einsum('knt,kt->nk', bases, torch.einsum('knt,nk->kt', bases, Y))
         Y = Y / ((Y ** 2 * mask).sum(axis=0) / n_train) ** 0.5
         if clip is not None:
             Y = torch.clamp(Y, -clip, clip)
         loss = -torch.sum(design.heritability(Y))
+        if penalty is not None:
+            kind, weight = penalty
+            values, power = _PENALTIES[kind]
+            loss = loss + weight * torch.sum(values(params) / spread ** power)
         loss.backward()
         trait_optimizer.step()
 
@@ -213,7 +242,7 @@ def _train_batch(models, X, groups, environment, train_rows, noise_sd, earlier, 
 
 def train(model, X, groups, environment, train_test, model_file=None, n_traits=1, n_iter=10000,
           optimizer='adam', learning_rate=1e-3, noise_sd=0.1, noise='normal',
-          clip=None, device='cpu', verbose=True, subgroups=None, estimator='anova',
+          clip=None, penalty=None, device='cpu', verbose=True, subgroups=None, estimator='anova',
           max_copies=None):
     """Train synthetic traits one at a time to maximize their heritability on training data.
 
@@ -234,6 +263,13 @@ def train(model, X, groups, environment, train_test, model_file=None, n_traits=1
     this. noise is 'normal' (standard deviation noise_sd, the default) or 'uniform' (the paper's
     noise, in [0, noise_sd)). With clip, the standardized traits are clipped to [-clip, clip] in the
     loss; by default (None) the loss is the plain heritability.
+    penalty: None (the default), or (kind, weight): weight times a penalty on the trainable
+    parameters is added to the loss of each trait. kind is 'l1' (the sum of their absolute
+    values), 'l2' (the sum of their squares) or 'tv' (total variation: the sum of the absolute
+    differences between the weights of neighboring features, for the weight matrices only). The
+    heritability does not change with the scale of a trait, so the l1 and tv penalties are divided
+    by the spread of the trait (the mean absolute deviation of its noisy output on the training
+    individuals, before the regression on the earlier traits), and l2 by its square.
     estimator is 'anova' (anova_heritability) or 'henderson3' (Henderson3 with subgroups, e.g.
     plots of one family; h2opt.heritability.ESTIMATORS); it is optimized and reported.
     If model_file is given, the whole model is saved after each trait. This is train_models with
@@ -243,15 +279,15 @@ def train(model, X, groups, environment, train_test, model_file=None, n_traits=1
                  model_files=None if model_file is None else [model_file], n_traits=n_traits,
                  n_iter=n_iter, optimizer=optimizer,
                  learning_rate=learning_rate, noise_sd=noise_sd, noise=noise, clip=clip,
-                 device=device, verbose=verbose, subgroups=subgroups, estimator=estimator,
-                 max_copies=max_copies)
+                 penalty=penalty, device=device, verbose=verbose, subgroups=subgroups,
+                 estimator=estimator, max_copies=max_copies)
     return model
 
 
 def train_models(models, X, groups, environment, train_test, model_files=None, n_traits=1,
                  n_iter=10000, optimizer='adam', learning_rate=1e-3,
-                 noise_sd=0.1, noise='normal', clip=None, device='cpu', verbose=True,
-                 subgroups=None, estimator='anova', max_copies=None):
+                 noise_sd=0.1, noise='normal', clip=None, penalty=None, device='cpu',
+                 verbose=True, subgroups=None, estimator='anova', max_copies=None):
     """Train several TraitModels at once, each as by train with its own data split and noise.
 
     models: B TraitModels of one kind. train_test: (B, n) array, the train_test of each model.
@@ -278,8 +314,8 @@ def train_models(models, X, groups, environment, train_test, model_files=None, n
                 earlier.append(model(x, np.arange(trait)).double().cpu().numpy())
         train_batch([model.models[trait] for model in models], X, groups, environment, is_train,
                     sd[:, trait], earlier, n_iter=n_iter, optimizer=optimizer,
-                    learning_rate=learning_rate, noise=noise, clip=clip, device=device,
-                    subgroups=subgroups, estimator=estimator, max_copies=max_copies)
+                    learning_rate=learning_rate, noise=noise, clip=clip, penalty=penalty,
+                    device=device, subgroups=subgroups, estimator=estimator, max_copies=max_copies)
         for b, model in enumerate(models):
             if verbose:
                 Y = synthetic_traits(model, X, is_train[b], np.arange(trait + 1))[:, -1:]
