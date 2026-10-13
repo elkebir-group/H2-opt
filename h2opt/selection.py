@@ -27,6 +27,7 @@ import torch
 
 from .folds import group_folds
 from .heritability import _as_environment, heritability
+from .spatial import papadakis
 from .train import synthetic_traits, train_batch, train_linear_conv_models
 
 # Noise levels of H2-opt: the standard deviation of the normal input noise as a fraction of
@@ -66,7 +67,8 @@ def highest_level_within_one_se(levels, scores):
 
 
 def cross_validate_levels(fit, groups, environment, levels, subsets=None, n_splits=5, n_folds=5,
-                          seed=0, subgroups=None, estimator='anova', split_units=None):
+                          seed=0, subgroups=None, estimator='anova', split_units=None,
+                          neighbors=None):
     """Held-out heritability of a method's first trait at each level, on validation splits.
 
     Within each subset of the individuals (subsets: (k, n) boolean, e.g. the training individuals
@@ -81,9 +83,11 @@ def cross_validate_levels(fit, groups, environment, levels, subsets=None, n_spli
     index of its subset and its level. It returns the first trait of each copy for all n
     individuals, (copies, n), or (sets, copies, n) for several measurement sets of the same
     individuals. The score of a copy is the heritability of its trait on its held-out fold
-    (estimator and subgroups as in h2opt.train). Returns ((k, splits, n_levels) scores and the
-    (k, splits, n_levels, n) float32 traits, splits = N_PARTITIONS * n_splits; with sets, a set
-    axis after the first).
+    (estimator and subgroups as in h2opt.train); with neighbors ((n, n) weights, as in
+    h2opt.spatial.papadakis), of its trait after the nearest-neighbor adjustment, the neighbor
+    means over all individuals and the slope fitted on the held-out fold. Returns ((k, splits,
+    n_levels) scores and the (k, splits, n_levels, n) float32 traits, splits = N_PARTITIONS *
+    n_splits; with sets, a set axis after the first).
     """
     groups = np.asarray(groups)
     environment = _as_environment(environment, len(groups))
@@ -114,8 +118,11 @@ def cross_validate_levels(fit, groups, environment, levels, subsets=None, n_spli
     for k, set_traits in enumerate(traits):
         for (i, split), cs in together.items():
             rows = held_out[cs[0]]
+            Y = set_traits[cs].T
+            if neighbors is not None:
+                Y = papadakis(Y, neighbors, rows)
             values = heritability(
-                set_traits[cs][:, rows].T, groups[rows], environment[rows],
+                Y[rows], groups[rows], environment[rows],
                 None if subgroups is None else subgroups[rows], estimator)
             for c, value in zip(cs, values, strict=True):
                 scores[i, k, split, copies[c][2]] = value
@@ -127,7 +134,7 @@ def cross_validate_levels(fit, groups, environment, levels, subsets=None, n_spli
 
 def select_noise_level(make_model, X, groups, environment, subsets=None, levels=NOISE_LEVELS,
                        n_splits=5, n_folds=5, seed=0, subgroups=None, estimator='anova',
-                       split_units=None, **train_options):
+                       split_units=None, neighbors=None, **train_options):
     """Noise of H2-opt, one level for all traits: cross_validate_levels and
     highest_level_within_one_se.
 
@@ -142,7 +149,8 @@ def select_noise_level(make_model, X, groups, environment, subsets=None, levels=
     train; the (k, splits, n_levels) scores; and the (k, splits, n_levels, n) float32 traits,
     splits as in cross_validate_levels); with a list of sets, noise_sd (one per set: (k, sets)),
     scores and traits have a set axis after the first. The chosen level of subset i is
-    highest_level_within_one_se(levels, scores[i]).
+    highest_level_within_one_se(levels, scores[i]). With neighbors, training and scores use the
+    nearest-neighbor adjustment (h2opt.spatial).
     """
     max_copies = train_options.get('max_copies')
     if max_copies is not None and max_copies % len(levels):
@@ -163,7 +171,7 @@ def select_noise_level(make_model, X, groups, environment, subsets=None, levels=
             models = [copy.deepcopy(start) for _ in level]
             train_batch(models, measurements, groups, environment, fit_rows,
                         level * scales[subset, k], noise='normal', subgroups=subgroups,
-                        estimator=estimator, **train_options)
+                        estimator=estimator, neighbors=neighbors, **train_options)
             traits = []
             for model in models:
                 model.cpu()
@@ -173,7 +181,8 @@ def select_noise_level(make_model, X, groups, environment, subsets=None, levels=
         return np.array(out)
 
     scores, traits = cross_validate_levels(fit, groups, environment, levels, all_rows, n_splits,
-                                           n_folds, seed, subgroups, estimator, split_units)
+                                           n_folds, seed, subgroups, estimator, split_units,
+                                           neighbors)
     chosen = np.array([highest_level_within_one_se(levels, scores[i])
                        for i in range(len(all_rows))])
     noise_sd = chosen[:, None] * scales
@@ -184,7 +193,8 @@ def select_noise_level(make_model, X, groups, environment, subsets=None, levels=
 
 def score_linear_conv_levels(make_conv, X, groups, environment, linear_noise_sd, levels,
                              subsets=None, n_splits=5, n_folds=5, seed=0, subgroups=None,
-                             estimator='anova', split_units=None, **train_options):
+                             estimator='anova', split_units=None, neighbors=None,
+                             **train_options):
     """Held-out heritability of the first LinearConvModel trait at each noise level of the
     convolutional branch: cross_validate_levels; the chosen level of subset i is
     highest_level_within_one_se(levels, scores[i]).
@@ -211,9 +221,10 @@ def score_linear_conv_levels(make_conv, X, groups, environment, linear_noise_sd,
         models = train_linear_conv_models(
             make_conv, X, groups, environment, np.where(fit_rows, 0, 1),
             linear_noise_sd[subset][:, None], (level * scales[subset])[:, None], n_traits=1,
-            subgroups=subgroups, estimator=estimator, verbose=False, **train_options)
+            subgroups=subgroups, estimator=estimator, verbose=False, neighbors=neighbors,
+            **train_options)
         return np.array([synthetic_traits(model, X, rows)[:, 0]
                          for model, rows in zip(models, fit_rows, strict=True)])
 
     return cross_validate_levels(fit, groups, environment, levels, all_rows, n_splits, n_folds,
-                                 seed, subgroups, estimator, split_units)
+                                 seed, subgroups, estimator, split_units, neighbors)

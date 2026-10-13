@@ -1,6 +1,6 @@
 """H2-opt: self-supervised discovery of heritable traits in high-throughput phenotyping data."""
 
-from . import baselines, folds, selection
+from . import baselines, folds, selection, spatial
 from .decorrelation import Decorrelation
 from .heritability import (
     ESTIMATORS,
@@ -38,6 +38,7 @@ __all__ = [
     "baselines",
     "folds",
     "selection",
+    "spatial",
     "encode_latent",
     "heritability",
     "heritability_design",

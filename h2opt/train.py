@@ -10,6 +10,7 @@ from torch.func import functional_call, stack_module_state, vmap
 from .decorrelation import Decorrelation, orthonormal_basis
 from .heritability import heritability, heritability_design
 from .models import LinearConvModel, LinearModel, TraitModels
+from .spatial import papadakis_torch
 
 
 def synthetic_traits(model, X, is_train, traits=None):
@@ -87,7 +88,8 @@ def _bases(earlier, rows, device):
 
 def train_batch(models, X, groups, environment, train_rows, noise_sd, earlier=None,
                 n_iter=10000, optimizer='adam', learning_rate=1e-3, noise='normal', clip=None,
-                penalty=None, device='cpu', subgroups=None, estimator='anova', max_copies=None):
+                penalty=None, device='cpu', subgroups=None, estimator='anova', max_copies=None,
+                neighbors=None):
     """Train one trait in each of several models at once; each copy is trained as by train.
 
     models: B modules of one class, each mapping (n, m) measurements to an (n, 1) trait; they are
@@ -121,12 +123,13 @@ def train_batch(models, X, groups, environment, train_rows, noise_sd, earlier=No
             _train_batch(models[chunk], X, groups, environment, train_rows[chunk],
                          noise_sd[chunk], None if earlier is None else earlier[chunk], n_iter,
                          optimizer, learning_rate, noise, clip, penalty, device, subgroups,
-                         estimator)
+                         estimator, neighbors)
     return models
 
 
 def _train_batch(models, X, groups, environment, train_rows, noise_sd, earlier, n_iter,
-                 optimizer, learning_rate, noise, clip, penalty, device, subgroups, estimator):
+                 optimizer, learning_rate, noise, clip, penalty, device, subgroups, estimator,
+                 neighbors):
     """train_batch on one chunk of copies, all trained at once."""
     n_copies = len(models)
     if optimizer not in _OPTIMIZERS:
@@ -156,6 +159,9 @@ def _train_batch(models, X, groups, environment, train_rows, noise_sd, earlier, 
     mask = torch.tensor(train_rows.T, dtype=torch.float32, device=device)
     n_train = mask.sum(axis=0)
     bases = _bases([np.asarray(E)[used] for E in earlier], train_rows, device)
+    if neighbors is not None:
+        neighbors = torch.as_tensor(np.asarray(neighbors, dtype=np.float32)[np.ix_(used, used)],
+                                    device=device)
 
     for model in models:
         model.to(device)
@@ -189,6 +195,8 @@ def _train_batch(models, X, groups, environment, train_rows, noise_sd, earlier, 
         Y = Y / ((Y ** 2 * mask).sum(axis=0) / n_train) ** 0.5
         if clip is not None:
             Y = torch.clamp(Y, -clip, clip)
+        if neighbors is not None:
+            Y = papadakis_torch(Y, neighbors, mask)
         loss = -torch.sum(design.heritability(Y))
         if penalty is not None:
             kind, weight = penalty
@@ -243,7 +251,7 @@ def _train_batch(models, X, groups, environment, train_rows, noise_sd, earlier, 
 def train(model, X, groups, environment, train_test, model_file=None, n_traits=1, n_iter=10000,
           optimizer='adam', learning_rate=1e-3, noise_sd=0.1, noise='normal',
           clip=None, penalty=None, device='cpu', verbose=True, subgroups=None, estimator='anova',
-          max_copies=None):
+          max_copies=None, neighbors=None):
     """Train synthetic traits one at a time to maximize their heritability on training data.
 
     model: a TraitModels with at least n_traits traits; X: (n, m) measurements.
@@ -272,6 +280,10 @@ def train(model, X, groups, environment, train_test, model_file=None, n_traits=1
     individuals, before the regression on the earlier traits), and l2 by its square.
     estimator is 'anova' (anova_heritability) or 'henderson3' (Henderson3 with subgroups, e.g.
     plots of one family; h2opt.heritability.ESTIMATORS); it is optimized and reported.
+    neighbors: None (the default), or (n, n) nonnegative weights of the field neighbors of each
+    individual (h2opt.spatial.papadakis); the loss is then the heritability of the trait after
+    the nearest-neighbor adjustment, with neighbor means and slope over the training individuals
+    only. The printed heritability is that of the unadjusted trait.
     If model_file is given, the whole model is saved after each trait. This is train_models with
     one model.
     """
@@ -280,14 +292,15 @@ def train(model, X, groups, environment, train_test, model_file=None, n_traits=1
                  n_iter=n_iter, optimizer=optimizer,
                  learning_rate=learning_rate, noise_sd=noise_sd, noise=noise, clip=clip,
                  penalty=penalty, device=device, verbose=verbose, subgroups=subgroups,
-                 estimator=estimator, max_copies=max_copies)
+                 estimator=estimator, max_copies=max_copies, neighbors=neighbors)
     return model
 
 
 def train_models(models, X, groups, environment, train_test, model_files=None, n_traits=1,
                  n_iter=10000, optimizer='adam', learning_rate=1e-3,
                  noise_sd=0.1, noise='normal', clip=None, penalty=None, device='cpu',
-                 verbose=True, subgroups=None, estimator='anova', max_copies=None):
+                 verbose=True, subgroups=None, estimator='anova', max_copies=None,
+                 neighbors=None):
     """Train several TraitModels at once, each as by train with its own data split and noise.
 
     models: B TraitModels of one kind. train_test: (B, n) array, the train_test of each model.
@@ -315,7 +328,8 @@ def train_models(models, X, groups, environment, train_test, model_files=None, n
         train_batch([model.models[trait] for model in models], X, groups, environment, is_train,
                     sd[:, trait], earlier, n_iter=n_iter, optimizer=optimizer,
                     learning_rate=learning_rate, noise=noise, clip=clip, penalty=penalty,
-                    device=device, subgroups=subgroups, estimator=estimator, max_copies=max_copies)
+                    device=device, subgroups=subgroups, estimator=estimator, max_copies=max_copies,
+                    neighbors=neighbors)
         for b, model in enumerate(models):
             if verbose:
                 Y = synthetic_traits(model, X, is_train[b], np.arange(trait + 1))[:, -1:]
@@ -340,7 +354,7 @@ def train_models(models, X, groups, environment, train_test, model_files=None, n
 def train_linear_conv_models(make_conv, X, groups, environment, train_test, linear_noise_sd,
                              conv_noise_sd, n_traits=1, n_linear_iter=10000, n_iter=1000,
                              device='cpu', verbose=True, subgroups=None, estimator='anova',
-                             max_copies=None):
+                             max_copies=None, neighbors=None):
     """Train several TraitModels of LinearConvModel in two stages, each with its own data split.
 
     The first stage gives the start of the second stage:
@@ -375,7 +389,7 @@ def train_linear_conv_models(make_conv, X, groups, environment, train_test, line
     linear_sd = np.broadcast_to(np.asarray(linear_noise_sd, dtype=float), (n_models, n_traits))
     conv_sd = np.broadcast_to(np.asarray(conv_noise_sd, dtype=float), (n_models, n_traits))
     options = dict(n_traits=n_traits, device=device, verbose=verbose, subgroups=subgroups,
-                   estimator=estimator, max_copies=max_copies)
+                   estimator=estimator, max_copies=max_copies, neighbors=neighbors)
 
     # one linear TraitModels per distinct (train_test, linear_sd), in order of first use
     shared = {}
