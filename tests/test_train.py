@@ -227,6 +227,26 @@ def test_train_models_trains_each_model_as_alone(sorghum):
                                    h2opt.synthetic_traits(alone, X, is_train), atol=1e-4)
 
 
+def test_train_models_on_top_of_fixed_earlier_traits(sorghum):
+    # trait 1 of a two-trait model matches a new trait trained on top of the fixed trait 0
+    X, groups, environment = sorghum
+    X = X[:, ::20]
+    train_test = np.random.RandomState(1).randint(2, size=len(groups))
+    torch.manual_seed(0)
+    start = h2opt.TraitModels(2, h2opt.LinearModel, X.shape[1])
+    both = h2opt.train(copy.deepcopy(start), X, groups, environment, train_test, n_traits=2,
+                       n_iter=50, noise_sd=0.0, verbose=False)
+    x = torch.as_tensor(X, dtype=torch.float32)
+    with torch.no_grad():
+        first = both(x, [0]).double().numpy()
+    later = h2opt.TraitModels(1, h2opt.LinearModel, X.shape[1])
+    later.models[0] = copy.deepcopy(start.models[1])
+    h2opt.train_models([later], X, groups, environment, train_test[None], n_traits=1, n_iter=50,
+                       noise_sd=0.0, verbose=False, earlier=[first])
+    with torch.no_grad():
+        np.testing.assert_allclose(later(x, [0]).numpy(), both(x, [1]).numpy(), atol=1e-4)
+
+
 def _image_data():
     rng = np.random.RandomState(0)
     groups = np.repeat(np.arange(15), 4)

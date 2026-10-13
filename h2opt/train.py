@@ -300,15 +300,18 @@ def train_models(models, X, groups, environment, train_test, model_files=None, n
                  n_iter=10000, optimizer='adam', learning_rate=1e-3,
                  noise_sd=0.1, noise='normal', clip=None, penalty=None, device='cpu',
                  verbose=True, subgroups=None, estimator='anova', max_copies=None,
-                 neighbors=None):
+                 neighbors=None, earlier=None):
     """Train several TraitModels at once, each as by train with its own data split and noise.
 
     models: B TraitModels of one kind. train_test: (B, n) array, the train_test of each model.
     noise_sd: one noise standard deviation for all, one per model (B, 1), or one per model and
     trait (B, n_traits). model_files: None, or one file per model. Trait t of all models is trained
     together by train_batch, each model on top of its own traits 0..t-1, so the models share each
-    noise draw. With verbose, the train and test heritability of each trait of each model is
-    printed. The other options are as in train. Returns models, in evaluation mode.
+    noise draw. earlier: None, or B arrays (n, t) of fixed traits of each model for all
+    individuals (e.g. the traits of an earlier run); every trait is then trained on top of these
+    as well as the model's own traits 0..t-1. With verbose, the train and test heritability of
+    each trait of each model is printed (before the regression on earlier). The other options are
+    as in train. Returns models, in evaluation mode.
     """
     groups = np.asarray(groups)
     subgroups = None if subgroups is None else np.asarray(subgroups)
@@ -321,12 +324,13 @@ def train_models(models, X, groups, environment, train_test, model_files=None, n
         model.to(device)
 
     for trait in range(n_traits):
-        earlier = []
-        for model in models:
+        before = []
+        for b, model in enumerate(models):
             with torch.no_grad():
-                earlier.append(model(x, np.arange(trait)).double().cpu().numpy())
+                own = model(x, np.arange(trait)).double().cpu().numpy()
+            before.append(own if earlier is None else np.hstack([np.asarray(earlier[b]), own]))
         train_batch([model.models[trait] for model in models], X, groups, environment, is_train,
-                    sd[:, trait], earlier, n_iter=n_iter, optimizer=optimizer,
+                    sd[:, trait], before, n_iter=n_iter, optimizer=optimizer,
                     learning_rate=learning_rate, noise=noise, clip=clip, penalty=penalty,
                     device=device, subgroups=subgroups, estimator=estimator, max_copies=max_copies,
                     neighbors=neighbors)
@@ -354,7 +358,7 @@ def train_models(models, X, groups, environment, train_test, model_files=None, n
 def train_linear_conv_models(make_conv, X, groups, environment, train_test, linear_noise_sd,
                              conv_noise_sd, n_traits=1, n_linear_iter=10000, n_iter=1000,
                              device='cpu', verbose=True, subgroups=None, estimator='anova',
-                             max_copies=None, neighbors=None):
+                             max_copies=None, neighbors=None, earlier=None):
     """Train several TraitModels of LinearConvModel in two stages, each with its own data split.
 
     The first stage gives the start of the second stage:
@@ -379,8 +383,9 @@ def train_linear_conv_models(make_conv, X, groups, environment, train_test, line
     trait t on top of traits 0..t-1 of the same stage. The first stage trains trait t of all
     linear models together. The second stage trains trait t of the models with the same
     train_test together, so a step computes only the training individuals of those models. Both
-    use the default optimizer of train (Adam). The other options are as in train_models. Returns
-    the B trained models.
+    use the default optimizer of train (Adam). earlier: as in train_models, both stages train on
+    top of these fixed traits. The other options are as in train_models. Returns the B trained
+    models.
     """
     X = np.asarray(X)
     flat = X.reshape((len(X), -1))
@@ -398,7 +403,8 @@ def train_linear_conv_models(make_conv, X, groups, environment, train_test, line
     first = [stage.index(i) for i in range(len(shared))]
     linear = [TraitModels(n_traits, LinearModel, flat.shape[1]) for _ in first]
     train_models(linear, flat, groups, environment, train_test[first], n_iter=n_linear_iter,
-                 noise_sd=linear_sd[first], **options)
+                 noise_sd=linear_sd[first],
+                 earlier=None if earlier is None else [earlier[b] for b in first], **options)
 
     # the models with the same train_test start from the same convolutional models
     starts, models = {}, []
@@ -423,5 +429,6 @@ def train_linear_conv_models(make_conv, X, groups, environment, train_test, line
         splits.setdefault(train_test[b].tobytes(), []).append(b)
     for split in splits.values():
         train_models([models[b] for b in split], X, groups, environment, train_test[split],
-                     n_iter=n_iter, noise_sd=0.0, **options)
+                     n_iter=n_iter, noise_sd=0.0,
+                     earlier=None if earlier is None else [earlier[b] for b in split], **options)
     return models
