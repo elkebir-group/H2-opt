@@ -85,10 +85,11 @@ traits = synthetic_traits(model, X, train_test == 0)
 
 Each step adds random noise to the training measurements (data augmentation), which regularizes the traits.
 
-Options: `n_iter` steps per trait (default 10000); `optimizer`, `'adam'` (default) or `'rmsprop'`; `learning_rate` (default 1e-3); `noise_sd` for data augmentation (default 0.1), one for all traits or one per trait: the standard deviation of the normal noise added to the measurements at each step, or with `noise='uniform'` the maximum of the paper's uniform noise in [0, `noise_sd`); `clip` to clip the standardized traits in the loss to [-clip, clip] (default `None`: no clipping, so the loss is the plain heritability; the paper clipped sorghum at 2); `model_file` to save the model after each trait; and `device` (e.g. `"cuda"`) to train on a GPU.
+Options: `n_iter` steps per trait (default 10000); `learning_rate` (default 1e-3); `noise_sd` for data augmentation (default 0.1), one for all traits or one per trait: the standard deviation of the normal noise added to the measurements at each step; `model_file` to save the model after each trait; and `device` (e.g. `"cuda"`) to train on a GPU.
+The loss is the plain heritability, with no clipping of the traits.
 `estimator` chooses the heritability that is optimized and reported: `'anova'` (default, `anova_heritability`) or `'henderson3'` (`Henderson3`, with `subgroups`, e.g. plots of one family).
-`'adam'` uses momentum 0.99 and decays the learning rate to 0 on a cosine schedule over the `n_iter` steps of each trait.
-`'rmsprop'` is the optimizer of the paper (constant learning rate). It converges slowly when the measurements are strongly correlated: the heritability does not change with the scale of a trait, so its steps shrink relative to the weights as the weights grow.
+The optimizer is Adam with momentum 0.99, and the learning rate decays to 0 on a cosine schedule over the `n_iter` steps of each trait.
+The paper's optimizer, RMSprop with a constant learning rate, converges slowly when the measurements are strongly correlated: the heritability does not change with the scale of a trait, so its steps shrink relative to the weights as the weights grow.
 `ConvModel` is a convolutional alternative to `LinearModel` for spectra, and `ImageConvModel(n_channels)` and `PositionImageConvModel(n_channels, image_size)` are two for multispectral images (input n x channels x height x width). `ImageConvModel` averages over the image; `PositionImageConvModel` has a weight per position, for images centered on one individual (the paper's Miscanthus model).
 
 `LinearConvModel(conv, weight, bias, linear_noise_sd, conv_noise_sd)` is a linear map of the flattened input, which starts at `weight` and `bias`, plus a convolutional model `conv` with its own random initialization; both train together, so the model can move away from the linear trait in any direction.

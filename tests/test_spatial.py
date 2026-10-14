@@ -90,3 +90,23 @@ def test_select_noise_level_with_neighbors_runs_and_scores_adjusted_traits():
         n_iter=20, split_units=np.arange(len(groups)), neighbors=neighbors)
     assert plain.shape == adjusted.shape
     assert not np.allclose(plain, adjusted)
+
+
+def test_individuals_without_neighbors_are_left_unadjusted_in_both_versions():
+    X, _, neighbors = field_trial()
+    neighbors = neighbors.copy()
+    alone = [0, 7]
+    neighbors[alone] = 0
+    y = X[:, 0] + X[:, 1]
+    rows = np.ones(len(y), dtype=bool)
+    adjusted = papadakis(y, neighbors, rows)
+    assert np.isfinite(adjusted).all()
+    np.testing.assert_array_equal(adjusted[alone], y[alone])
+    # slope 1 in training: the same as papadakis with b = 1 on the individuals with neighbors
+    Y = y - y.mean()
+    got = papadakis_torch(torch.tensor(Y[:, None]), torch.tensor(neighbors),
+                          torch.ones((len(y), 1), dtype=torch.float64))[:, 0].numpy()
+    np.testing.assert_allclose(got[alone], Y[alone], atol=1e-12)
+    has = neighbors.sum(1) > 0
+    x = neighbors[has] @ Y / neighbors[has].sum(1)
+    np.testing.assert_allclose(got[has], Y[has] - (x - x.mean()), atol=1e-12)

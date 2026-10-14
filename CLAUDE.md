@@ -28,7 +28,7 @@ installs this checkout as an editable sibling (`../H2-opt`).
 | Module | Content |
 |---|---|
 | `heritability.py` | `anova_heritability`, `AnovaDesign`, `Henderson3`, `heritability` and `heritability_design` (either estimator, by name) |
-| `models.py`, `train.py` | trait models (`LinearModel`, `ConvModel` for spectra, `ImageConvModel` for images with global average pooling, `PositionImageConvModel` for images with a weight per position, `LinearConvModel`: a linear map plus a CNN, trained together); the training loop `train_batch` (many copies at once; fast for linear models), `train_models` (several models, e.g. one per fold) and `train` on it (Adam, or the paper's RMSprop; an optional penalty on the parameters: L1, L2 or total variation, divided by the spread of the trait), `synthetic_traits` |
+| `models.py`, `train.py` | trait models (`LinearModel`, `ConvModel` for spectra, `ImageConvModel` for images with global average pooling, `PositionImageConvModel` for images with a weight per position, `LinearConvModel`: a linear map plus a CNN, trained together); the training loop `train_batch` (many copies at once; fast for linear models), `train_models` (several models, e.g. one per fold) and `train` on it (Adam; an optional penalty on the parameters: L1, L2 or total variation, divided by the spread of the trait), `synthetic_traits` |
 | `decorrelation.py` | `Decorrelation`: traits made uncorrelated on training individuals, in order |
 | `baselines.py` | PCA, genetic PCA, PCH (ridge; `RIDGES` = squared noise levels; `PCH.tune` by `cross_validate_levels`), most heritable features |
 | `folds.py` | `group_folds`, `per_group` |

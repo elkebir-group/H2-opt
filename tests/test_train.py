@@ -43,7 +43,7 @@ def test_train_increases_heritability(sorghum):
     assert heritability() > before
 
 
-def test_train_with_normal_noise_and_no_clip(sorghum):
+def test_train_with_noise(sorghum):
     X, groups, environment = sorghum
     X = X[:, ::20]
     torch.manual_seed(0)
@@ -53,9 +53,6 @@ def test_train_with_normal_noise_and_no_clip(sorghum):
                 verbose=False)
     traits = model(torch.tensor(X).float()).detach()
     assert torch.isfinite(traits).all()
-    with pytest.raises(ValueError):
-        h2opt.train(model, X, groups, environment, np.zeros(len(groups), dtype=int),
-                    n_iter=1, noise='gaussian', verbose=False)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason='needs CUDA')
@@ -136,25 +133,6 @@ def test_train_batch_in_chunks_shares_the_noise_draws(sorghum_small):
     torch.testing.assert_close(together[0].lin1.weight, together[2].lin1.weight)
 
 
-def test_rmsprop_and_unknown_optimizer(sorghum):
-    X, groups, environment = sorghum
-    X = X[:, ::20]
-    torch.manual_seed(0)
-    model = h2opt.TraitModels(1, h2opt.LinearModel, X.shape[1])
-
-    def heritability():
-        traits = model(torch.tensor(X).float()).detach()
-        return h2opt.anova_heritability(traits, groups, environment).item()
-
-    before = heritability()
-    h2opt.train(model, X, groups, environment, np.zeros(len(groups), dtype=int), n_iter=50,
-                optimizer='rmsprop', learning_rate=1e-3, noise_sd=0.005, verbose=False)
-    assert heritability() > before
-    with pytest.raises(ValueError):
-        h2opt.train(model, X, groups, environment, np.zeros(len(groups), dtype=int), n_iter=1,
-                    optimizer='sgd', verbose=False)
-
-
 def test_train_batch_copies_with_shared_rows_train_as_alone(sorghum):
     # copies with the same training rows share each noise draw; each gets only its own gradient
     X, groups, environment = sorghum
@@ -194,8 +172,8 @@ def test_train_takes_one_noise_sd_per_trait(sorghum):
 
 
 def test_train_batch_linear_model_matches_the_generic_path(sorghum):
-    # LinearModel takes a shortcut, (X + level Z) w = X w + level (Z w); a plain nn.Linear does not.
-    # With normal noise, LinearModel draws Z w directly, and its draws differ from the generic path.
+    # LinearModel takes a shortcut, X w + level (Z w); a plain nn.Linear does not. LinearModel
+    # draws Z w directly, so its draws differ from the generic path: compare without noise.
     X, groups, environment = sorghum
     X = X[:, ::20]
     rows = np.random.RandomState(0).randint(4, size=len(groups)) != 0
@@ -204,8 +182,7 @@ def test_train_batch_linear_model_matches_the_generic_path(sorghum):
     plain = copy.deepcopy(linear.lin1)
     for model in (linear, plain):
         torch.manual_seed(1)
-        h2opt.train_batch([model], X, groups, environment, [rows], [0.002], n_iter=100,
-                          noise='uniform')
+        h2opt.train_batch([model], X, groups, environment, [rows], [0.0], n_iter=100)
     torch.testing.assert_close(linear.lin1.weight, plain.weight, rtol=0, atol=1e-5)
 
 
@@ -407,3 +384,50 @@ def test_unknown_penalty(sorghum):
     X, groups, environment = sorghum
     with pytest.raises(ValueError):
         _penalized_weights(X[:, ::20], groups, environment, ('l0', 1e-4), 1)
+
+
+def test_train_models_refuses_a_one_dimensional_noise_sd(sorghum):
+    # one value per model and one per trait look the same when there are as many models as traits
+    X, groups, environment = sorghum
+    X = X[:, ::20]
+    train_test = np.zeros((2, len(groups)), dtype=int)
+    models = [h2opt.TraitModels(2, h2opt.LinearModel, X.shape[1]) for _ in range(2)]
+    with pytest.raises(ValueError, match='1-D'):
+        h2opt.train_models(models, X, groups, environment, train_test, n_traits=2, n_iter=1,
+                           noise_sd=np.array([0.01, 0.02]), verbose=False)
+    h2opt.train_models(models, X, groups, environment, train_test, n_traits=2, n_iter=1,
+                       noise_sd=np.array([[0.01], [0.02]]), verbose=False)
+
+
+def test_train_batch_noise_does_not_change_with_max_copies(sorghum):
+    # each chunk draws the noise of all individuals, so the copies of a chunk with other training
+    # rows get the same noise as when all copies train at once
+    X, groups, environment = sorghum
+    X = X[:, ::20]
+    rng = np.random.RandomState(0)
+    rows = [rng.rand(len(groups)) < 0.7 for _ in range(4)]
+    torch.manual_seed(0)
+    start = torch.nn.Sequential(torch.nn.Linear(X.shape[1], 1))
+    weights = []
+    for max_copies in (None, 1):
+        models = [copy.deepcopy(start) for _ in rows]
+        torch.manual_seed(1)
+        h2opt.train_batch(models, X, groups, environment, rows, [0.002] * 4, n_iter=30,
+                          max_copies=max_copies)
+        weights.append(torch.cat([m[0].weight for m in models]).detach())
+    torch.testing.assert_close(weights[0], weights[1], rtol=1e-4, atol=1e-6)
+
+
+def test_train_batch_without_noise_matches_a_tiny_noise(sorghum):
+    # without noise there is no draw and the input is shared by all copies
+    X, groups, environment = sorghum
+    X = X[:, ::20]
+    rows = np.random.RandomState(0).rand(len(groups)) < 0.7
+    torch.manual_seed(0)
+    start = torch.nn.Sequential(torch.nn.Linear(X.shape[1], 1))
+    weights = []
+    for sd in (0.0, 1e-12):
+        models = [copy.deepcopy(start) for _ in range(2)]
+        h2opt.train_batch(models, X, groups, environment, [rows, rows], [sd, sd], n_iter=30)
+        weights.append(torch.cat([m[0].weight for m in models]).detach())
+    torch.testing.assert_close(weights[0], weights[1], rtol=1e-4, atol=1e-6)

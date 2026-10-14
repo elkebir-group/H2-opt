@@ -141,7 +141,7 @@ def select_noise_level(make_model, X, groups, environment, subsets=None, levels=
     The method fits the first trait as in train: a model make_model() (a module mapping the
     measurements of n individuals to (n, 1)) with normal noise of standard deviation level *
     noise_scale(X) (X of the subset), all copies trained together by train_batch (train_options
-    go to it, e.g. n_iter, device, max_copies; max_copies must be a multiple of len(levels)). X
+    go to it, e.g. n_iter, device, max_copies). X
     is one array of measurements (first axis: individuals), or a list of arrays of the same
     individuals (e.g. one per date): then every set is trained and scored, and one level serves
     all sets by their mean score. The other arguments are as in cross_validate_levels. Returns
@@ -152,11 +152,6 @@ def select_noise_level(make_model, X, groups, environment, subsets=None, levels=
     highest_level_within_one_se(levels, scores[i]). With neighbors, training and scores use the
     nearest-neighbor adjustment (h2opt.spatial).
     """
-    max_copies = train_options.get('max_copies')
-    if max_copies is not None and max_copies % len(levels):
-        # the levels of one split must train in one chunk, to share their noise draws
-        raise ValueError(f'max_copies ({max_copies}) must be a multiple of the number of levels '
-                         f'({len(levels)})')
     sets = [np.asarray(x) for x in (X if isinstance(X, list | tuple) else [X])]
     all_rows = np.ones((1, len(sets[0])), dtype=bool) if subsets is None else np.asarray(subsets)
     scales = np.array([[noise_scale(x[rows].reshape((rows.sum(), -1))) for x in sets]
@@ -170,7 +165,7 @@ def select_noise_level(make_model, X, groups, environment, subsets=None, levels=
             start = make_model()
             models = [copy.deepcopy(start) for _ in level]
             train_batch(models, measurements, groups, environment, fit_rows,
-                        level * scales[subset, k], noise='normal', subgroups=subgroups,
+                        level * scales[subset, k], subgroups=subgroups,
                         estimator=estimator, neighbors=neighbors, **train_options)
             traits = []
             for model in models:

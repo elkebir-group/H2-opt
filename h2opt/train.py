@@ -32,24 +32,6 @@ def _cosine(learning_rate, n_iter):
     return learning_rate * (1 + np.cos(np.pi * np.arange(n_iter) / n_iter)) / 2
 
 
-def _constant(learning_rate, n_iter):
-    return np.full(n_iter, learning_rate)
-
-
-def _adam(parameters, learning_rate, capturable):
-    return torch.optim.Adam(parameters, lr=learning_rate, betas=(0.99, 0.999),
-                            capturable=capturable)
-
-
-def _rmsprop(parameters, learning_rate, capturable):
-    return torch.optim.RMSprop(parameters, lr=learning_rate, capturable=capturable)
-
-
-# The optimizer of one trait and the learning rate of each of its steps, by name.
-_OPTIMIZERS = {'adam': (_adam, _cosine), 'rmsprop': (_rmsprop, _constant)}
-
-# Noise draws of standard scale, by name: uniform in [0, 1) or standard normal.
-_NOISE = {'uniform': torch.rand, 'normal': torch.randn}
 
 
 def _l1(params):
@@ -87,27 +69,26 @@ def _bases(earlier, rows, device):
 
 
 def train_batch(models, X, groups, environment, train_rows, noise_sd, earlier=None,
-                n_iter=10000, optimizer='adam', learning_rate=1e-3, noise='normal', clip=None,
-                penalty=None, device='cpu', subgroups=None, estimator='anova', max_copies=None,
-                neighbors=None):
+                n_iter=10000, learning_rate=1e-3, penalty=None, device='cpu', subgroups=None,
+                estimator='anova', max_copies=None, neighbors=None):
     """Train one trait in each of several models at once; each copy is trained as by train.
 
     models: B modules of one class, each mapping (n, m) measurements to an (n, 1) trait; they are
     trained in place. train_rows: (B, n) boolean array, the training individuals of each copy.
-    noise_sd: length B, the noise standard deviation of each copy. earlier: None, or B arrays
-    (n, t_b) with the earlier traits of each copy for all individuals; in the loss, the trait of
-    a copy is its residual after least-squares regression on its earlier traits on its training
-    rows. All copies share each noise draw, scaled by their own noise_sd, so differences between
-    their noise are not confounded with the draw. The loss is the sum of the negative
-    heritabilities of the copies, and each copy's parameters get only its own gradient. With
-    max_copies, at most that many copies are trained at once (e.g. to fit large models in GPU
-    memory); every chunk starts from the same random state, so the copies of chunks with the
-    same individuals (the union of their training rows) get the same draws. A chunk with other
-    individuals draws other noise, so a copy's result can change with max_copies: train the
-    copies that must share draws (e.g. the levels of one split) in one chunk. A model can draw
-    more noise in its forward pass in training mode (e.g. LinearConvModel); all copies share
-    these draws too. The models are trained in training mode and returned in evaluation mode.
-    The other options are as in train. Returns models.
+    noise_sd: length B, the standard deviation of the normal input noise of each copy. earlier:
+    None, or B arrays (n, t_b) with the earlier traits of each copy for all individuals; in the
+    loss, the trait of a copy is its residual after least-squares regression on its earlier traits
+    on its training rows. All copies share each noise draw, scaled by their own noise_sd, so
+    differences between their noise are not confounded with the draw. The loss is the sum of the
+    negative heritabilities of the copies, and each copy's parameters get only its own gradient.
+    With max_copies, at most that many copies are trained at once (e.g. to fit large models in GPU
+    memory); every chunk starts from the same random state and draws the noise of all n individuals,
+    so every copy gets the same input noise whatever max_copies is. Without noise (all noise_sd 0)
+    there is no draw. A model can draw more noise in its forward pass in training mode (e.g.
+    LinearConvModel); all copies of a chunk share these draws, but they depend on the individuals of
+    the chunk (the union of their training rows), so copies with different training rows that must
+    share them belong in one chunk. The models are trained in training mode and returned in
+    evaluation mode. The other options are as in train. Returns models.
     """
     n_copies = len(models)
     train_rows = np.asarray(train_rows, dtype=bool).reshape((n_copies, -1))
@@ -122,20 +103,14 @@ def train_batch(models, X, groups, environment, train_rows, noise_sd, earlier=No
             torch.manual_seed(seed)
             _train_batch(models[chunk], X, groups, environment, train_rows[chunk],
                          noise_sd[chunk], None if earlier is None else earlier[chunk], n_iter,
-                         optimizer, learning_rate, noise, clip, penalty, device, subgroups,
-                         estimator, neighbors)
+                         learning_rate, penalty, device, subgroups, estimator, neighbors)
     return models
 
 
 def _train_batch(models, X, groups, environment, train_rows, noise_sd, earlier, n_iter,
-                 optimizer, learning_rate, noise, clip, penalty, device, subgroups, estimator,
-                 neighbors):
+                 learning_rate, penalty, device, subgroups, estimator, neighbors):
     """train_batch on one chunk of copies, all trained at once."""
     n_copies = len(models)
-    if optimizer not in _OPTIMIZERS:
-        raise ValueError(f"optimizer must be 'adam' or 'rmsprop', not {optimizer!r}")
-    if noise not in _NOISE:
-        raise ValueError(f"noise must be 'uniform' or 'normal', not {noise!r}")
     if penalty is not None and penalty[0] not in _PENALTIES:
         raise ValueError(f"penalty must be 'l1', 'l2' or 'tv', not {penalty[0]!r}")
     train_rows = np.asarray(train_rows, dtype=bool).reshape((n_copies, -1))
@@ -144,13 +119,21 @@ def _train_batch(models, X, groups, environment, train_rows, noise_sd, earlier, 
     if earlier is None:
         earlier = [np.zeros((len(groups), 0))] * n_copies
     X = torch.as_tensor(np.asarray(X), dtype=torch.float32, device=device)
+    has_noise = bool(np.any(np.asarray(noise_sd)))
     noise_sd = torch.as_tensor(np.asarray(noise_sd, dtype=np.float32), device=device)
-    draw = _NOISE[noise]
 
     # only the individuals that some copy trains on take part
     used = np.any(train_rows, axis=0)
+    n_all = len(used)
     train_rows = train_rows[:, used]
-    X = X[torch.as_tensor(used, device=device)]
+    used_rows = torch.as_tensor(np.flatnonzero(used), device=device)
+    X = X[used_rows]
+
+    def draw(shape):
+        """Standard normal noise of the used individuals, (n_used,) + shape. The draw is over all
+        individuals, so each individual gets the same noise whatever the other copies of the
+        chunk train on."""
+        return torch.randn((n_all,) + shape, device=device)[used_rows]
     design = heritability_design(estimator, groups[used],
                                  environment[used] if environment is not None else None,
                                  None if subgroups is None else np.asarray(subgroups)[used],
@@ -175,15 +158,14 @@ def _train_batch(models, X, groups, environment, train_rows, noise_sd, earlier, 
         """(n, B) outputs of the copies on X + noise_sd * Z, Z a fresh noise draw."""
         if isinstance(base, LinearModel):
             W = params['lin1.weight'][:, 0, :].T
-            if noise == 'normal':
-                # each copy's Z w is normal with standard deviation |w| per individual, so draw it
-                # directly: the same loss distribution without a noisy (n, m) draw
-                noise_w = draw((X.shape[0], 1), device=device) * torch.linalg.norm(W, axis=0)
-            else:
-                # (X + sd Z) w = X w + sd (Z w): no noisy copy of X per copy
-                noise_w = draw(X.shape, device=device) @ W
+            # (X + sd Z) w = X w + sd (Z w), and each copy's Z w is normal with standard deviation
+            # |w| per individual, so draw it directly: no noisy (n, m) copy of X per copy
+            noise_w = draw((1,)) * torch.linalg.norm(W, axis=0)
             return X @ W + noise_w * noise_sd.reshape((1, -1)) + params['lin1.bias'].T
-        Z = draw(X.shape, device=device)
+        if not has_noise:
+            # all copies see the same X: no draw, and no copy of X per copy
+            return vmap(forward, in_dims=(0, 0, None), randomness='same')(params, buffers, X).T
+        Z = draw(tuple(X.shape[1:]))
         sd = noise_sd.reshape((-1,) + (1,) * X.dim())
         return vmap(forward, randomness='same')(params, buffers, X + Z * sd).T
 
@@ -193,8 +175,6 @@ def _train_batch(models, X, groups, environment, train_rows, noise_sd, earlier, 
         spread = Y.abs().sum(axis=0) / n_train
         Y = Y - torch.einsum('knt,kt->nk', bases, torch.einsum('knt,nk->kt', bases, Y))
         Y = Y / ((Y ** 2 * mask).sum(axis=0) / n_train) ** 0.5
-        if clip is not None:
-            Y = torch.clamp(Y, -clip, clip)
         if neighbors is not None:
             Y = papadakis_torch(Y, neighbors, mask)
         loss = -torch.sum(design.heritability(Y))
@@ -208,10 +188,10 @@ def _train_batch(models, X, groups, environment, train_rows, noise_sd, earlier, 
     # On a GPU, one step is recorded as a CUDA graph after a few ordinary steps and then replayed:
     # a step launches many small kernels, and one replay costs less than launching them.
     cuda = torch.device(device).type == 'cuda'
-    make_optimizer, schedule = _OPTIMIZERS[optimizer]
-    rates = schedule(learning_rate, n_iter)
+    rates = _cosine(learning_rate, n_iter)
     rate = torch.tensor(learning_rate, device=device) if cuda else learning_rate
-    trait_optimizer = make_optimizer(list(params.values()), rate, cuda)
+    trait_optimizer = torch.optim.Adam(list(params.values()), lr=rate, betas=(0.99, 0.999),
+                                       capturable=cuda)
 
     def set_rate(i):
         if cuda:
@@ -249,9 +229,8 @@ def _train_batch(models, X, groups, environment, train_rows, noise_sd, earlier, 
 
 
 def train(model, X, groups, environment, train_test, model_file=None, n_traits=1, n_iter=10000,
-          optimizer='adam', learning_rate=1e-3, noise_sd=0.1, noise='normal',
-          clip=None, penalty=None, device='cpu', verbose=True, subgroups=None, estimator='anova',
-          max_copies=None, neighbors=None):
+          learning_rate=1e-3, noise_sd=0.1, penalty=None, device='cpu', verbose=True,
+          subgroups=None, estimator='anova', max_copies=None, neighbors=None):
     """Train synthetic traits one at a time to maximize their heritability on training data.
 
     model: a TraitModels with at least n_traits traits; X: (n, m) measurements.
@@ -261,16 +240,13 @@ def train(model, X, groups, environment, train_test, model_file=None, n_traits=1
     the test individuals never shape the objective. The final traits are
     synthetic_traits(model, X, train_test == 0); with verbose, the train and test heritability of
     each trait is printed when it is trained.
-    Each step adds noise to the training measurements and maximizes the heritability.
+    Each step adds normal noise to the training measurements and maximizes the heritability.
     noise_sd is one noise standard deviation for all traits or one per trait (length n_traits).
-    optimizer is 'adam' (the default: Adam with momentum 0.99, and a learning rate that decays from
-    learning_rate to 0 on a cosine schedule over the n_iter steps of each trait) or 'rmsprop'
-    (RMSprop with a constant learning rate, the paper's optimizer). The heritability does not
-    change with the scale of a trait, so RMSprop's steps shrink relative to the weights as the
-    weights grow, and it converges slowly for correlated measurements; momentum and the decay fix
-    this. noise is 'normal' (standard deviation noise_sd, the default) or 'uniform' (the paper's
-    noise, in [0, noise_sd)). With clip, the standardized traits are clipped to [-clip, clip] in the
-    loss; by default (None) the loss is the plain heritability.
+    The optimizer is Adam with momentum 0.99, and a learning rate that decays from learning_rate
+    to 0 on a cosine schedule over the n_iter steps of each trait. The heritability does not
+    change with the scale of a trait, so the steps of an optimizer without momentum (e.g. the
+    paper's RMSprop) shrink relative to the weights as the weights grow, and it converges slowly
+    for correlated measurements; momentum and the decay fix this.
     penalty: None (the default), or (kind, weight): weight times a penalty on the trainable
     parameters is added to the loss of each trait. kind is 'l1' (the sum of their absolute
     values), 'l2' (the sum of their squares) or 'tv' (total variation: the sum of the absolute
@@ -287,37 +263,54 @@ def train(model, X, groups, environment, train_test, model_file=None, n_traits=1
     If model_file is given, the whole model is saved after each trait. This is train_models with
     one model.
     """
+    noise_sd = np.asarray(noise_sd, dtype=float)
     train_models([model], X, groups, environment, np.asarray(train_test)[None],
                  model_files=None if model_file is None else [model_file], n_traits=n_traits,
-                 n_iter=n_iter, optimizer=optimizer,
-                 learning_rate=learning_rate, noise_sd=noise_sd, noise=noise, clip=clip,
+                 n_iter=n_iter, learning_rate=learning_rate,
+                 noise_sd=noise_sd.reshape((1, -1)) if noise_sd.ndim else noise_sd,
                  penalty=penalty, device=device, verbose=verbose, subgroups=subgroups,
                  estimator=estimator, max_copies=max_copies, neighbors=neighbors)
     return model
 
 
+def _per_model_and_trait(value, n_models, n_traits, name):
+    """value (one for all, (n_models, 1) or (n_models, n_traits)) as an (n_models, n_traits)
+    array. A 1-D value is refused: one value per model and one per trait look the same when
+    n_models equals n_traits."""
+    value = np.asarray(value, dtype=float)
+    if value.ndim == 1 and value.size > 1:
+        raise ValueError(f'{name} must be one value, ({n_models}, 1) or ({n_models}, {n_traits}), '
+                         f'not a 1-D array of {value.size}')
+    try:
+        return np.broadcast_to(value.reshape(()) if value.ndim == 1 else value,
+                               (n_models, n_traits))
+    except ValueError:
+        raise ValueError(f'{name} of shape {value.shape} does not fit {n_models} models and '
+                         f'{n_traits} traits') from None
+
+
 def train_models(models, X, groups, environment, train_test, model_files=None, n_traits=1,
-                 n_iter=10000, optimizer='adam', learning_rate=1e-3,
-                 noise_sd=0.1, noise='normal', clip=None, penalty=None, device='cpu',
+                 n_iter=10000, learning_rate=1e-3, noise_sd=0.1, penalty=None, device='cpu',
                  verbose=True, subgroups=None, estimator='anova', max_copies=None,
                  neighbors=None, earlier=None):
     """Train several TraitModels at once, each as by train with its own data split and noise.
 
     models: B TraitModels of one kind. train_test: (B, n) array, the train_test of each model.
-    noise_sd: one noise standard deviation for all, one per model (B, 1), or one per model and
-    trait (B, n_traits). model_files: None, or one file per model. Trait t of all models is trained
-    together by train_batch, each model on top of its own traits 0..t-1, so the models share each
-    noise draw. earlier: None, or B arrays (n, t) of fixed traits of each model for all
-    individuals (e.g. the traits of an earlier run); every trait is then trained on top of these
-    as well as the model's own traits 0..t-1. With verbose, the train and test heritability of
-    each trait of each model is printed (before the regression on earlier). The other options are
-    as in train. Returns models, in evaluation mode.
+    noise_sd: one noise standard deviation for all, one per model (B, 1), or one per model and trait
+    (B, n_traits); a 1-D array is refused, since one value per model and one per trait look the same
+    when B equals n_traits. model_files: None, or one file per model. Trait t of all models is
+    trained together by train_batch, each model on top of its own traits 0..t-1, so the models share
+    each noise draw. earlier: None, or B arrays (n, t) of fixed traits of each model for all
+    individuals (e.g. the traits of an earlier run); every trait is then trained on top of these as
+    well as the model's own traits 0..t-1. With verbose, the train and test heritability of each
+    trait of each model is printed (before the regression on earlier). The other options are as in
+    train. Returns models, in evaluation mode.
     """
     groups = np.asarray(groups)
     subgroups = None if subgroups is None else np.asarray(subgroups)
     train_test = np.asarray(train_test).reshape((len(models), -1))
     is_train, is_test = train_test == 0, train_test == 1
-    sd = np.broadcast_to(np.asarray(noise_sd, dtype=float), (len(models), n_traits))
+    sd = _per_model_and_trait(noise_sd, len(models), n_traits, 'noise_sd')
     env = np.asarray(environment) if environment is not None else None
     x = torch.as_tensor(np.asarray(X), dtype=torch.float32, device=device)
     for model in models:
@@ -330,8 +323,8 @@ def train_models(models, X, groups, environment, train_test, model_files=None, n
                 own = model(x, np.arange(trait)).double().cpu().numpy()
             before.append(own if earlier is None else np.hstack([np.asarray(earlier[b]), own]))
         train_batch([model.models[trait] for model in models], X, groups, environment, is_train,
-                    sd[:, trait], before, n_iter=n_iter, optimizer=optimizer,
-                    learning_rate=learning_rate, noise=noise, clip=clip, penalty=penalty,
+                    sd[:, trait], before, n_iter=n_iter, learning_rate=learning_rate,
+                    penalty=penalty,
                     device=device, subgroups=subgroups, estimator=estimator, max_copies=max_copies,
                     neighbors=neighbors)
         for b, model in enumerate(models):
@@ -383,7 +376,7 @@ def train_linear_conv_models(make_conv, X, groups, environment, train_test, line
     trait t on top of traits 0..t-1 of the same stage. The first stage trains trait t of all
     linear models together. The second stage trains trait t of the models with the same
     train_test together, so a step computes only the training individuals of those models. Both
-    use the default optimizer of train (Adam). earlier: as in train_models, both stages train on
+    use the optimizer of train. earlier: as in train_models, both stages train on
     top of these fixed traits. The other options are as in train_models. Returns the B trained
     models.
     """
@@ -391,8 +384,8 @@ def train_linear_conv_models(make_conv, X, groups, environment, train_test, line
     flat = X.reshape((len(X), -1))
     train_test = np.asarray(train_test).reshape((-1, len(X)))
     n_models = len(train_test)
-    linear_sd = np.broadcast_to(np.asarray(linear_noise_sd, dtype=float), (n_models, n_traits))
-    conv_sd = np.broadcast_to(np.asarray(conv_noise_sd, dtype=float), (n_models, n_traits))
+    linear_sd = _per_model_and_trait(linear_noise_sd, n_models, n_traits, 'linear_noise_sd')
+    conv_sd = _per_model_and_trait(conv_noise_sd, n_models, n_traits, 'conv_noise_sd')
     options = dict(n_traits=n_traits, device=device, verbose=verbose, subgroups=subgroups,
                    estimator=estimator, max_copies=max_copies, neighbors=neighbors)
 
