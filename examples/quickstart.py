@@ -1,5 +1,5 @@
-"""The README examples on the sorghum example data: heritability, training synthetic traits,
-choosing the noise level and simulated spectra.
+"""The README examples on the sorghum example data: heritability, choosing the noise level
+and training synthetic traits.
 
     uv run python examples/quickstart.py                 # as in the README (10,000 steps per trait)
     uv run python examples/quickstart.py --device cuda   # the same on a GPU
@@ -13,14 +13,10 @@ import numpy as np
 import torch
 
 from h2opt import (
-    AutoEncoder,
     LinearModel,
     TraitModels,
     anova_heritability,
-    encode_latent,
-    latent_scale,
     load_npz,
-    reconstruction_residuals,
     synthetic_traits,
     train,
 )
@@ -57,14 +53,6 @@ def main(n_iter, device):
         H = anova_heritability(traits[rows], groups[rows], environment[rows])
         print(f'{name} set heritability of the synthetic traits:', H.numpy().round(2))
 
-    # Simulated spectra from latent traits.
-    autoencoder = AutoEncoder.load(EXAMPLES / 'autoencoder.pt')
-    latent = load_npz(EXAMPLES / 'simulatedLatentTraits.npz')
-    latent = (latent - latent.mean(axis=0)) / latent.std(axis=0)
-    simulated = encode_latent(latent, autoencoder, latent_scale(autoencoder, X),
-                                reconstruction_residuals(autoencoder, X),
-                                np.random.RandomState(0))
-    print('simulated spectra:', simulated.shape)
 
 
 if __name__ == '__main__':

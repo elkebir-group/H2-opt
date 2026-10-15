@@ -107,21 +107,6 @@ The same procedure chooses the ridge of PCH (`PCH.tune`) and the CNN level of `L
 - `PCH(n_traits, ridge)`: principal components of heritability, the exact linear maximum of heritability with a ridge.
 - `MaxHeritabilityFeatures(n_traits)`: the most heritable individual measurements, selected greedily.
 
-## Simulated hyperspectral measurements
-
-`encode_latent` embeds latent traits into simulated spectra with a pretrained autoencoder (`data/examples/autoencoder.pt`, 5 latent dimensions).
-The decoder is linearized at the latent means, and each simulated individual gets the non-heritable residual of a random real measurement.
-
-```python
-from h2opt import AutoEncoder, encode_latent, latent_scale, reconstruction_residuals
-
-autoencoder = AutoEncoder.load('data/examples/autoencoder.pt')
-latent = load_npz('data/examples/simulatedLatentTraits.npz')
-latent = (latent - latent.mean(axis=0)) / latent.std(axis=0)
-simulated = encode_latent(latent, autoencoder, latent_scale(autoencoder, X),
-                            reconstruction_residuals(autoencoder, X), np.random.RandomState(0))
-```
-
 ## Tests
 
 ```bash
