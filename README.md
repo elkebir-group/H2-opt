@@ -86,11 +86,10 @@ traits = synthetic_traits(model, X, train_test == 0)
 Each step adds random noise to the training measurements (data augmentation), which regularizes the traits.
 
 Options: `n_iter` steps per trait (default 10000); `learning_rate` (default 1e-3); `noise_sd` for data augmentation (default 0.1), one for all traits or one per trait: the standard deviation of the normal noise added to the measurements at each step; `model_file` to save the model after each trait; and `device` (e.g. `"cuda"`) to train on a GPU.
-The loss is the plain heritability, with no clipping of the traits.
 `estimator` chooses the heritability that is optimized and reported: `'anova'` (default, `anova_heritability`) or `'henderson3'` (`Henderson3`, with `subgroups`, e.g. plots of one family).
 The optimizer is Adam with momentum 0.99, and the learning rate decays to 0 on a cosine schedule over the `n_iter` steps of each trait.
-The paper's optimizer, RMSprop with a constant learning rate, converges slowly when the measurements are strongly correlated: the heritability does not change with the scale of a trait, so its steps shrink relative to the weights as the weights grow.
-`ConvModel` is a convolutional alternative to `LinearModel` for spectra, and `ImageConvModel(n_channels)` and `PositionImageConvModel(n_channels, image_size)` are two for multispectral images (input n x channels x height x width). `ImageConvModel` averages over the image; `PositionImageConvModel` has a weight per position, for images centered on one individual (the paper's Miscanthus model).
+The heritability does not change with the scale of a trait, so without momentum the steps shrink relative to the weights as the weights grow. Momentum and the decay keep training fast for correlated measurements.
+`ConvModel` is a convolutional alternative to `LinearModel` for spectra, and `ImageConvModel(n_channels)` and `PositionImageConvModel(n_channels, image_size)` are two for multispectral images (input n x channels x height x width). `ImageConvModel` averages over the image; `PositionImageConvModel` has a weight per position, for images centered on one individual.
 
 `LinearConvModel(conv, weight, bias, linear_noise_sd, conv_noise_sd)` is a linear map of the flattened input, which starts at `weight` and `bias`, plus a convolutional model `conv` with its own random initialization; both train together, so the model can move away from the linear trait in any direction.
 In training mode, each branch draws its own noise: the linear branch `linear_noise_sd` |w| per individual on its output (the same as input noise of that SD for a linear map), the convolutional model input noise of SD `conv_noise_sd`; so either branch can have more noise.
@@ -101,14 +100,13 @@ In training mode, each branch draws its own noise: the linear branch `linear_noi
 The copies share each noise draw, scaled by their own level, and each copy gets only its own gradient. `max_copies` trains at most that many copies at once, for models too large to train all copies together on a GPU.
 For `LinearModel` it is fast, because (X + noise) w = X w + noise w needs no noisy copy of X per model, and with normal noise each model's noise w is drawn directly (normal with standard deviation |w| per individual).
 On a GPU, one step is recorded as a CUDA graph and replayed, which removes the cost of launching its many small kernels.
-On an RTX 3080, one sorghum-sized linear model trains at about 2,500 steps per second, and 400 at about 210,000 model-steps per second.
 Other models are trained with `torch.func.vmap`, which gives no speedup for `ConvModel`.
 
 ### Choosing the noise level
 
 Every method chooses its regularization level by one procedure, `cross_validate_levels`: the groups are split into validation folds, the method fits its first trait at each level on the other folds, and the score is the heritability of that trait on the held-out fold. A method only supplies a function that fits all (subset, split, level) copies at once.
 `select_noise_level` uses it to choose one noise level of H2-opt for all traits, and `PCH.tune` to choose the ridge of PCH, both by `highest_level_within_one_se` (the highest level within one standard error of the best mean score; the SE of the paired difference over the splits).
-The first trait sets the level: a mean over all traits rewards high noise, which spreads the heritable signal over more traits (the first traits lose heritability and the later traits gain it). The first trait also needs no earlier traits, so selection trains only it.
+The first trait sets the level. It needs no earlier traits, so selection trains only it.
 Each level is the standard deviation of normal noise as a fraction of `noise_scale(X)`, the root mean variance of the measurements, so the same levels apply to data on any scale.
 
 ```python
@@ -120,8 +118,8 @@ noise_sd, scores, traits = select_noise_level(lambda: LinearModel(X.shape[1]), X
 train(model, X, groups, environment, train_test, n_traits=n_traits, noise_sd=noise_sd[0])
 ```
 
-Within each subset of the individuals (`subsets`, e.g. the training individuals of several outer folds, all chosen in one batch), the groups are split (`h2opt.folds.group_folds`) into 5 folds, and each fold is the held-out groups of one validation split (`n_folds`; `n_splits` uses only the first folds). The split into folds is repeated `N_PARTITIONS` = 4 times with different seeds, so a choice rests on 20 splits: with one partition of 5 splits, the standard error is not stable and the chosen level can change a lot with the seed.
-The levels are `NOISE_LEVELS` (0.001 to 100, quarter-decade steps), the one grid of every method. The chosen level has the best held-out heritability averaged over the splits.
+Within each subset of the individuals (`subsets`, e.g. the training individuals of several outer folds, all chosen in one batch), the groups are split (`h2opt.folds.group_folds`) into 5 folds, and each fold is the held-out groups of one validation split (`n_folds`; `n_splits` uses only the first folds). The split into folds is repeated `N_PARTITIONS` = 4 times with different seeds, so a choice rests on 20 splits.
+The levels are `NOISE_LEVELS` (0.001 to 100, quarter-decade steps), the one grid of every method. The chosen level is the highest level within one standard error of the best mean held-out heritability over the splits (`highest_level_within_one_se`).
 All subsets, splits and levels are trained together by `train_batch`.
 It returns the noise standard deviation of each subset for `train`: the chosen level times `noise_scale` of the subset's measurements.
 Given a list of measurement sets of the same individuals (e.g. one per date), it trains and scores each set and chooses one level for all of them by their mean score; each set gets its own standard deviation, the level times its own `noise_scale`.
@@ -186,6 +184,6 @@ The CUDA tests are skipped when no GPU is present.
 
 ## Related repositories
 
-- [`elkebir-group/H2-opt-analysis`](https://github.com/elkebir-group/H2-opt-analysis)
-  (private): the analyses and figures of the paper (sorghum, Miscanthus, metabolomics,
+- [`elkebir-group/H2-opt-analysis`](https://github.com/elkebir-group/H2-opt-analysis):
+  the analyses and figures of the paper (sorghum, Miscanthus, metabolomics,
   simulations). It installs this package from a sibling checkout.

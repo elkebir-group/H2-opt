@@ -12,7 +12,7 @@ dist/
 wheels/
 *.whl
 
-# uv lockfile (not committed, matching prolyG's convention)
+# uv lockfile (not committed)
 uv.lock
 
 # Test / coverage
@@ -42,10 +42,11 @@ data/*
 # Models written by the README examples.
 /model.pt
 
-# Top-level scratch directory: agent <-> user artifacts that persist across
-# Claude Code sessions (handoff notes, ad-hoc notes, throwaway data). Unlike
-# /tmp/ it survives restarts. Committed code never cites a .scratch/ path.
+# Local scratch directory (not committed).
 .scratch/
 
-# Local Claude Code session state.
+# Local editor and agent state.
 .claude/*
+
+# Local agent instructions (not committed).
+CLAUDE.md

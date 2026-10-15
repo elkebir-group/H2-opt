@@ -66,7 +66,7 @@ def test_train_on_cuda(sorghum):
 
 
 def test_adam_reaches_the_pch_trait(sorghum):
-    # with normal noise of SD s and no clipping, the optimum of a linear trait is the PCH trait
+    # with normal noise of SD s, the optimum of a linear trait is the PCH trait
     # with ridge s^2 / v (v: the mean variance of the measurements)
     X, groups, environment = sorghum
     X = X[:, ::100]

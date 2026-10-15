@@ -3,11 +3,8 @@
 One procedure for every method (cross_validate_levels): the groups of each subset of the
 individuals are split into validation folds, N_PARTITIONS times with different seeds; the method
 fits its first trait at each level on the other folds, and the score is its heritability on the
-held-out fold. One partition of 5 splits gives too few splits for a stable standard error: the
-chosen level can change a lot with the seed of the partition. Only the first trait is
-scored: a mean over all traits rewards more regularization, which spreads the heritable signal
-over more traits (the first traits lose heritability and the later traits gain it). The first
-trait also needs no earlier traits, so only it is fitted.
+held-out fold. Only the first trait is scored. It needs no earlier traits, so only it is
+fitted.
 
 One rule chooses from the scores (highest_level_within_one_se), for every choice of a
 regularization level: H2-opt's noise (select_noise_level), PCH's ridge (h2opt.baselines.PCH.tune)

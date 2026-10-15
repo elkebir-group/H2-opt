@@ -5,7 +5,7 @@ import torch
 import h2opt
 
 
-def test_heritability_matches_paper_example(sorghum):
+def test_heritability_matches_readme_example(sorghum):
     X, groups, environment = sorghum
     H = h2opt.anova_heritability(torch.tensor(X[:, :10]).float(), groups, environment)
     expected = [0.0530, 0.0322, 0.0545, 0.0715, 0.0774, 0.0755, 0.0564, 0.0422, 0.0479, 0.0503]

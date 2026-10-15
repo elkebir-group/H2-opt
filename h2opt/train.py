@@ -244,9 +244,9 @@ def train(model, X, groups, environment, train_test, model_file=None, n_traits=1
     noise_sd is one noise standard deviation for all traits or one per trait (length n_traits).
     The optimizer is Adam with momentum 0.99, and a learning rate that decays from learning_rate
     to 0 on a cosine schedule over the n_iter steps of each trait. The heritability does not
-    change with the scale of a trait, so the steps of an optimizer without momentum (e.g. the
-    paper's RMSprop) shrink relative to the weights as the weights grow, and it converges slowly
-    for correlated measurements; momentum and the decay fix this.
+    change with the scale of a trait, so the steps of an optimizer without momentum shrink
+    relative to the weights as the weights grow, and it converges slowly for correlated
+    measurements. Momentum and the decay keep the steps in proportion to the weights.
     penalty: None (the default), or (kind, weight): weight times a penalty on the trainable
     parameters is added to the loss of each trait. kind is 'l1' (the sum of their absolute
     values), 'l2' (the sum of their squares) or 'tv' (total variation: the sum of the absolute

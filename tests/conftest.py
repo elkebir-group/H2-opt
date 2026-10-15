@@ -8,8 +8,7 @@ import torch
 
 import h2opt
 
-# The tests are small: a few threads are enough, and the suite must not take every core of a
-# machine that is running other jobs.
+# Limit threads so the test suite stays light.
 torch.set_num_threads(4)
 
 EXAMPLES = Path(__file__).resolve().parent.parent / 'data' / 'examples'
