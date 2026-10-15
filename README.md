@@ -25,7 +25,7 @@ works if you only need the package.
 
 ## Examples
 
-`examples/quickstart.py` runs all examples below on the sorghum example data
+[`examples/quickstart.py`](examples/quickstart.py) runs all examples below on the sorghum example data
 (`uv run python examples/quickstart.py`; add `--device cuda` to train on a GPU, or `--steps 20`
 for a quick check).
 The output of `uv run python examples/quickstart.py --device cuda` (about 1 minute on a GPU) is in
