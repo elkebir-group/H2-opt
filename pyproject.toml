@@ -8,7 +8,7 @@ version = "0.2.0"
 description = "H2-opt: self-supervised discovery of heritable traits in high-throughput phenotyping data"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = { text = "BSD-3-Clause" }
 authors = [
     { name = "El-Kebir Lab", email = "melkebir@illinois.edu" },
 ]
