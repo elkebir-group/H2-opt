@@ -1,5 +1,7 @@
 """H2-opt: self-supervised discovery of heritable traits in high-throughput phenotyping data."""
 
+__version__ = '1.0.0'
+
 from . import baselines, folds, selection, spatial
 from .decorrelation import Decorrelation
 from .heritability import (

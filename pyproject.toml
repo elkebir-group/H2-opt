@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "h2opt"
-version = "0.2.0"
+dynamic = ["version"]
 description = "H2-opt: self-supervised discovery of heritable traits in high-throughput phenotyping data"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -29,6 +29,9 @@ dev = [
 [project.urls]
 Homepage = "https://github.com/elkebir-group/H2-opt"
 Analysis = "https://github.com/elkebir-group/H2-opt-analysis"
+
+[tool.hatch.version]
+path = "h2opt/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["h2opt"]
