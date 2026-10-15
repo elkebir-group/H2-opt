@@ -26,7 +26,10 @@ works if you only need the package.
 ## Examples
 
 `examples/quickstart.py` runs all examples below on the sorghum example data
-(`uv run python examples/quickstart.py`; add `--steps 20` for a quick check).
+(`uv run python examples/quickstart.py`; add `--device cuda` to train on a GPU, or `--steps 20`
+for a quick check).
+The output of `uv run python examples/quickstart.py --device cuda` (about 1 minute on a GPU) is in
+[`examples/quickstart_output.txt`](examples/quickstart_output.txt).
 
 The examples below use the sorghum hyperspectral data in `data/examples` (the measurements are split over two files because of GitHub file size limits):
 
@@ -34,11 +37,13 @@ The examples below use the sorghum hyperspectral data in `data/examples` (the me
 import numpy as np
 import torch
 from h2opt import load_npz
+from h2opt.folds import group_folds
 
 X = np.concatenate((load_npz('data/examples/X_file1.npz'), load_npz('data/examples/X_file2.npz')))
 groups = load_npz('data/examples/genotypes.npz')
 environment = load_npz('data/examples/environment.npz')
-train_test = np.zeros(X.shape[0], dtype=int)  # 0: training, 1: test individual
+train_test = (group_folds(groups, n_folds=3) == 0).astype(int)  # a third of the clones held out
+is_train = train_test == 0
 ```
 
 ## Heritability
@@ -58,7 +63,7 @@ It stays unbiased when environment and groups are confounded. Both estimators ar
 ## Training synthetic traits
 
 `train` learns synthetic traits one at a time, each maximizing heritability on the training individuals after regression on the earlier traits.
-`synthetic_traits` returns them uncorrelated on the training individuals.
+`synthetic_traits` returns them uncorrelated on the training individuals; their heritability on the held-out clones measures how well they generalize.
 
 ```python
 from h2opt import synthetic_traits, train, TraitModels, LinearModel
@@ -67,7 +72,8 @@ n_traits = 10
 model = TraitModels(n_traits, LinearModel, X.shape[1])
 train(model, X, groups, environment, train_test, model_file='model.pt', n_traits=n_traits,
       n_iter=10000, noise_sd=0.005)
-traits = synthetic_traits(model, X, train_test == 0)  # n by n_traits
+traits = torch.tensor(synthetic_traits(model, X, is_train))  # n by n_traits
+H_test = anova_heritability(traits[~is_train], groups[~is_train], environment[~is_train])
 ```
 
 Each step adds normal noise of standard deviation `noise_sd` to the measurements, which regularizes the traits.
@@ -86,7 +92,7 @@ Levels are relative to `noise_scale(X)`, so the same grid applies to data on any
 from h2opt.selection import select_noise_level
 
 noise_sd, scores, _ = select_noise_level(lambda: LinearModel(X.shape[1]), X, groups, environment,
-                                         subsets=[train_test == 0], n_iter=10000)
+                                         subsets=[is_train], n_iter=10000)
 train(model, X, groups, environment, train_test, n_traits=n_traits, noise_sd=noise_sd[0])
 ```
 
